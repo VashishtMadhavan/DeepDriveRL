@@ -1,5 +1,6 @@
 import os,argparse,sys, random
 import gym
+import itertools
 from gym.wrappers import Monitor
 import universe
 from universe.wrappers import Vision, Logger
@@ -27,13 +28,17 @@ def setup(env, args):
 	lr_schedule=args.lr_schedule
 	)
 
-	env = Monitor(env, args.monitor_dir)
+	monitor_dir = os.path.join(args.output_dir, "monitor")
+	env = Monitor(env, monitor_dir)
 	env = Vision(env)
 	env = CropObservations(env) #TODO: dont really know if this works see if you could keep it aournd
 	env = SafeActionSpace(env)
 	env = Logger(env)
 
-	args.num_timesteps = args.iters * 4
+        if args.model == "BaseDQN":
+            args.q_func = dqn_base
+        else:
+            raise NotImplementedError("Add support for different Q network models")
 
 	def stop_criterion(env, max_t):
 		return env.get_total_steps() >= max_t
@@ -43,13 +48,15 @@ def setup(env, args):
 	[
 		(0, 1.0),
 		(1e6, 0.1),
-		(args.iters / 2, 0.01),
+		(args.max_iters / 2, 0.01),
 		], outside_value=0.01
 	)
 	return env
 
-def train(env, session, args, 
-	q_func=dqn_base, 
+#TODO: attach tensorBoard
+#TODO: add support for saving weights
+#TODO: add support for different Q networks
+def train(env, session, args,
 	replay_buffer_size=1000000,
 	batch_size=32,
 	gamma=0.99,
@@ -59,11 +66,14 @@ def train(env, session, args,
 	target_update_freq=10000,
 	grad_norm_clipping=10):
 
-	#TODO: potentially adapt this to include more actions...SafeActionSpace sort of restricts total possible space of actions
-	img_h, img_w, img_c = (512, 800, 3)
-	input_shape = (img_h, img_w, frame_history_len * img_c) # to account for sequence of frames
-	actions = env.action_space[0] + env.action_space[1] + env.action_space[2]
-	num_actions = len(actions)
+	# TODO: set up Torcs with same variable names as Dusk Drive and with similar format
+	if args.task == "DuskDrive":
+		img_h, img_w, img_c = (512, 800, 3)
+		input_shape = (img_h, img_w, frame_history_len * img_c) # to account for sequence of frames
+		actions = env.action_space[0] + env.action_space[1] + env.action_space[2]
+		num_actions = len(actions)
+	elif args.task == "Torcs":
+		raise NotImplementedError("Please implement Torcs Functionality...")
 
 	# Placeholder Formatting
 	obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
@@ -75,14 +85,13 @@ def train(env, session, args,
 	obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
 	obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
-
 	# Q learning dynamics
 	actions_mat = tf.one_hot(act_t_ph, num_actions, off_value=0.0, on_value=1.0, axis=-1)
-	q_val = q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
-	target_q_val = q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
+	q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
+	target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
 
-	q_val = tf.reduce_sum(q_val * actions_mat, reduction_indices=1)
-	target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_val, reduction_indices=1) * done_mask_ph
+	q_val = tf.reduce_sum(q_net * actions_mat, reduction_indices=1)
+	target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
 	error = tf.reduce_mean(tf.square(target_q_val - q_val))
 
 	q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
@@ -102,51 +111,103 @@ def train(env, session, args,
 		update_target_fn.append(var_target.assign(var))
 		update_target_fn = tf.group(*update_target_fn)
 
-	replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
+	replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len) #TODO: check ReplayBuffer code
 
 	###############
-    # RUN ENV     #
-    ###############
-    model_initialized = False
-    num_param_updates = 0
-    mean_episode_reward      = -float('nan')
-    best_mean_episode_reward = -float('inf')
-    last_obs = env.reset()
-    log_steps = 10000
+	# Run Env    #
+	###############
+	model_initialized = False
+	num_param_updates = 0
+	mean_episode_reward      = -float('nan')
+	best_mean_episode_reward = -float('inf')
+	log_steps = 10000
 
-    plot_iters = []
-    plot_mean_rewards = []
-    plot_best_rewards = []
+	last_obs = env.reset()
+	log_file = "%s/%s" % (args.output_dir, args.log_file)
+
+	lfp = open(log_file, 'w')
+	lfp.write("Timestep\tMean Reward\tBest Mean Reward\tEpisodes\tExploration\tLearning Rate\n")
+	lfp.close()
+
+	for t in itertools.count():
+		if args.stopping(env, args.max_iters):
+			break
+
+		obs_idx = replay_buffer.store_frame(last_obs)
+
+		# Loading ReplayBuffer with actions that are:
+		# 	1. Random with probability exploration_schedule.value(t)
+		#	2. Chosen from the target DQN
+
+		if random.rand() < args.exploration_schedule.value(t) or not model_initialized:
+			action = random.randint(0,num_actions-1)
+		else:
+			encoded_obs = replay_buffer.encode_recent_observation()
+			encoded_obs = encoded_obs[np.newaxis, ...]
+			q_net_eval = sess.run(q_net, feed_dict={obs_t_ph: encoded_obs})
+			action_idx = np.argmax(q_net_eval)
+
+		last_obs, reward, done, info = env.step(actions[action_idx])
+		replay_buffer.store_effect(obs_idx, action, reward, done)
+
+		if done:
+			last_obs = env.reset()
 
 
+		# Performing Experience Replay by sampling from the ReplayBuffer
+		# and training the network with some random exploration criterion
 
+		if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
+			obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
+			
+			if not model_initialized:
+				model_initialized = True
+				initialize_interdependent_variables(session, tf.global_variables(), 
+					{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
 
+			train_dict = {obs_t_ph: obs_batch,
+						act_t_ph: act_batch,
+						rew_t_ph: rew_batch,
+						obs_tp1_ph: next_obs_batch,
+						done_mask_ph: done_mask,
+						learning_rate: args.optimizer.lr_schedule.value(t)
+						}
+			session.run(train_fn, feed_dict=train_dict)
 
+			# Logging
+			episode_rewards = env.get_episode_rewards()
+			if len(episode_rewards) > 0:
+				mean_episode_reward = np.mean(episode_rewards)
+			if len(episode_rewards) > 100:
+				best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
+
+			if t % log_steps == 0 and model_initialized:
+				if best_mean_episode_reward != -float('inf'):
+					lfp = open(log_file, 'a')
+					lfp.write("%s\t%s\t%s\t%s\t%s\t%s\n" %(t, 
+						mean_episode_reward, 
+						best_mean_episode_reward, 
+						len(episode_rewards),
+						args.exploration_schedule.value(t),
+						args.optimizer.lr_schedule.value(t)))
+					lfp.close()
 
 	
-
-	
-
-
-
-
-
-
-
 def get_session(gpu_id):
 	os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    tf.reset_default_graph()
-    tf_config = tf.ConfigProto(
-        inter_op_parallelism_threads=1,
-        intra_op_parallelism_threads=1)
-    tf_config.gpu_options.visible_device_list=gpu_id
-    session = tf.Session(config=tf_config)
-    return session
+	tf.reset_default_graph()
+	tf_config = tf.ConfigProto(
+		inter_op_parallelism_threads=1,
+		intra_op_parallelism_threads=1)
+	tf_config.gpu_options.visible_device_list=gpu_id
+	session = tf.Session(config=tf_config)
+	return session
 
 
 def main(args):
 	args.seed = 0
-	args.output_dir = 'experiment_%s' %(args.exp_name)
+	random.seed(args.seed)
+	np.random.seed(args.seed)
 
 	if not os.path.exists(args.output_dir):
 		os.mkdir(args.output_dir)
@@ -159,18 +220,16 @@ def main(args):
 
 	sess = get_session(args.gpu_id)
 	env = setup(env, args)
-
-
+	train(env, sess, args)
 
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', type=int, default=0, help='gpu id')
-	parser.add_argument('--exp_name', type=str, default="base", help="experiment names to keep track of different runs")
+	parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
 	parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
-	parser.add_argument('--monitor_dir', type=str, default='monitor', help='where to store monitor output')
 	parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
 	parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-	parser.add_argument('--iters', type=int, default=10000, help='number of iterations to train DQN')
+	parser.add_argument('--max_iters', type=int, default=10000, help='number of timesteps to run DQN')
 	parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
 	return parser.parse_args()
 

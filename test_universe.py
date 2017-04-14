@@ -11,13 +11,15 @@ env = Vision(env)
 env = CropObservations(env)
 env = SafeActionSpace(env)
 env = Logger(env)
-env.configure(remotes=1)  # automatically creates a local docker container
+env.configure(remotes=1) 
+
+# automatically creates a local docker container
 actions = env.action_space[0] + env.action_space[1] + env.action_space[2]
 observation_n = env.reset()
 counter = 0
 
 while counter < 3000:
-  action_n = [random.sample(actions,1) for ob in observation_n]
+  action_n = [[('KeyEvent', 'ArrowUp', True)] for ob in observation_n]
   observation_n, reward_n, done_n, info = env.step(action_n)
   counter+=1
   env.render()
