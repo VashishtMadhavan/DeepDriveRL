@@ -28,14 +28,21 @@ def setup(env, args):
 	lr_schedule=args.lr_schedule
 	)
 
+	# setting up dir to store monitor output
 	monitor_dir = os.path.join(args.output_dir, "monitor")
 	if not os.path.exists(monitor_dir):
 		os.mkdir(monitor_dir)
 
+	# setting up dir to store model weights
+	args.snapshot_dir = os.path.join(args.output_dir, "weights")
+	if not os.path.exists(args.snapshot_dir):
+		os.mkdir(args.snapshot_dir)
+
+
 	env = Logger(env)
 	env = Monitor(env, monitor_dir, force=True)
 	env = Vision(env)
-	env = CropObservations(env) #TODO: dont really know if this works see if you could keep it aournd
+	env = CropObservations(env)
 	env = SafeActionSpace(env)
 
 	if args.model == "BaseDQN":
@@ -53,7 +60,6 @@ def setup(env, args):
 	return env
 
 #TODO: attach tensorBoard
-#TODO: add support for saving weights
 #TODO: add support for different Q networks
 def train(env, session, args,
 	replay_buffer_size=1000000,
@@ -119,7 +125,9 @@ def train(env, session, args,
 	best_mean_episode_reward = -float('inf')
 	episode_rewards = []
 	log_steps = 10000
+	
 
+	saver = tf.train.Saver()
 	last_obs = env.reset()
 	log_file = "%s/%s" % (args.output_dir, args.log_file)
 
@@ -132,6 +140,8 @@ def train(env, session, args,
 			env.render()
 
 		if t >= args.max_iters:
+			save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
+			print "Model saved at %s: " %(save_path)
 			break
 
 		if last_obs[0] is None:
@@ -170,8 +180,13 @@ def train(env, session, args,
 			
 			if not model_initialized:
 				model_initialized = True
-				initialize_interdependent_variables(session, tf.global_variables(), 
-					{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
+				if not args.weights:
+					initialize_interdependent_variables(session, tf.global_variables(), 
+						{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
+				else:
+					saver.restore(session, args.weights)
+					print "Model restored..."
+
 
 			train_dict = {obs_t_ph: obs_batch,
 						act_t_ph: act_batch,
@@ -231,11 +246,12 @@ def main(args):
 
 def parse_args():
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--gpu', type=int, default=-1, help='gpu id')
+	parser.add_argument('--gpu', type=int, default=0, help='gpu id')
 	parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
 	parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
 	parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
 	parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
+        parser.add_argument('--weights', type=str, default=None, help="path to model weights")
 	parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
 	parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
 	parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
