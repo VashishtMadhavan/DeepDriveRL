@@ -128,6 +128,9 @@ def train(env, session, args,
 	lfp.close()
 
 	for t in itertools.count():
+		if args.render:
+			env.render()
+
 		if t >= args.max_iters:
 			break
 
@@ -235,6 +238,7 @@ def parse_args():
 	parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
 	parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
 	parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
+	parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
 	return parser.parse_args()
 
 
