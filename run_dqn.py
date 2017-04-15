@@ -117,7 +117,7 @@ def train(env, session, args,
 	num_param_updates = 0
 	mean_episode_reward      = -float('nan')
 	best_mean_episode_reward = -float('inf')
-	epsiode_rewards = []
+	episode_rewards = []
 	log_steps = 10000
 
 	last_obs = env.reset()
@@ -152,9 +152,9 @@ def train(env, session, args,
 
 		last_obs, reward, done, info = env.step([actions[action_idx]])
 		episode_rewards.append(reward[0])
-		replay_buffer.store_effect(obs_idx, action, reward, done)
+		replay_buffer.store_effect(obs_idx, action_idx, reward[0], done)
 
-		if done:
+		if done[0]:
 			last_obs = env.reset()
 			episode_rewards = []
 
