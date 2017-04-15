@@ -7,6 +7,7 @@ from universe.wrappers import Vision, Logger, Monitor
 from universe.wrappers.experimental import CropObservations, SafeActionSpace
 import numpy as np
 import tensorflow as tf
+from scipy.misc import imresize
 from network import *
 from dqn_utils import *
 
@@ -62,7 +63,7 @@ def setup(env, args):
 #TODO: attach tensorBoard
 #TODO: add support for different Q networks
 def train(env, session, args,
-	replay_buffer_size=1000000,
+	replay_buffer_size=100000,
 	batch_size=32,
 	gamma=0.99,
 	learning_starts=50000,
@@ -71,10 +72,13 @@ def train(env, session, args,
 	target_update_freq=10000,
 	grad_norm_clipping=10):
 
-	# TODO: set up Torcs with same variable names as Dusk Drive and with similar format
+	
+	# resizing all network input to (128,128,3) for ease of processing
+	img_h, img_w, img_c = (128, 128, 3)
+	input_shape = (img_h, img_w, frame_history_len * img_c)
+
+	#TODO: implement Torcs action extraction
 	if args.task == "DuskDrive":
-		img_h, img_w, img_c = (512, 800, 3)
-		input_shape = (img_h, img_w, frame_history_len * img_c) # to account for sequence of frames
 		actions = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
 		num_actions = len(actions)
 	elif args.task == "Torcs":
@@ -99,8 +103,13 @@ def train(env, session, args,
 	target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
 	error = tf.reduce_mean(tf.square(target_q_val - q_val))
 
-	q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-	target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
+	# if tensorflow v0.12 uncomment two lines below and comment out the bottom two lines
+	
+	#q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+	#target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
+	q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='q_func')
+        target_q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='tq_func')
+	
 
 	# Optimization parameters
 	lr = tf.placeholder(tf.float32, (), name="learn_rate")
@@ -114,7 +123,7 @@ def train(env, session, args,
 		update_target_fn.append(var_target.assign(var))
 
 	update_target_fn = tf.group(*update_target_fn)
-	replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len) #TODO: check ReplayBuffer code
+	replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
 
 	###############
 	# Run Env    #
@@ -148,8 +157,8 @@ def train(env, session, args,
 			last_obs, reward, done, info = env.step([actions[0]])
 			continue
 
-
-		obs_idx = replay_buffer.store_frame(last_obs[0])
+		down_samp = imresize(last_obs[0], (128, 128, 3))
+		obs_idx = replay_buffer.store_frame(down_samp)
 
 		# Loading ReplayBuffer with actions that are:
 		# 	1. Random with probability exploration_schedule.value(t)
@@ -181,7 +190,8 @@ def train(env, session, args,
 			if not model_initialized:
 				model_initialized = True
 				if not args.weights:
-					initialize_interdependent_variables(session, tf.global_variables(), 
+					# if tensorflow v0.12 then replace global_variables with all variables
+					initialize_interdependent_variables(session, tf.all_variables(), 
 						{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
 				else:
 					saver.restore(session, args.weights)
@@ -213,6 +223,14 @@ def train(env, session, args,
 						args.exploration_schedule.value(t),
 						args.optimizer.lr_schedule.value(t)))
 					lfp.close()
+				print("Timestep %d" % (t,))
+            			print("mean reward (100 episodes) %f" % mean_episode_reward)
+            			print("best mean reward %f" % best_mean_episode_reward)
+            			print("episodes %d" % len(episode_rewards))
+            			print("exploration %f" % exploration.value(t))
+            			print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            			print
+	    			sys.stdout.flush()
 
 	
 def get_session(gpu_id):

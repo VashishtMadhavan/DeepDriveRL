@@ -149,8 +149,8 @@ def initialize_interdependent_variables(session, vars_list, feed_dict):
             try:
                 # If using an older version of TensorFlow, uncomment the line
                 # below and comment out the line after it.
-		#session.run(tf.initialize_variables([v]), feed_dict)
-                session.run(tf.variables_initializer([v]), feed_dict)
+		session.run(tf.initialize_variables([v]), feed_dict)
+                #session.run(tf.variables_initializer([v]), feed_dict)
             except tf.errors.FailedPreconditionError:
                 new_vars_left.append(v)
         if len(new_vars_left) >= len(vars_left):
@@ -315,6 +315,8 @@ class ReplayBuffer(object):
             Index at which the frame is stored. To be used for `store_effect` later.
         """
         if self.obs is None:
+	    print "FRAME >>>>"
+	    print [self.size] + list(frame.shape)
             self.obs      = np.empty([self.size] + list(frame.shape), dtype=np.uint8)
             self.action   = np.empty([self.size],                     dtype=np.int32)
             self.reward   = np.empty([self.size],                     dtype=np.float32)
