@@ -28,6 +28,10 @@ def setup(env, args):
 	if not os.path.exists(args.snapshot_dir):
 		os.mkdir(args.snapshot_dir)
 
+        args.summary_dir = os.path.join(args.output_dir, "summaries")
+	if not os.path.exists(args.summary_dir):
+		os.mkdir(args.summary_dir)
+
 	env = Logger(env)
 	env = Monitor(env, monitor_dir, force=True)
 	env = Vision(env)
@@ -40,7 +44,6 @@ def setup(env, args):
 		raise NotImplementedError("Add support for different Q network models")
 	return env
 
-#TODO: attach tensorBoard
 def train(env, session, args, batch_size=32, epsilon=0.03):
 	expert_data = pickle.load(open(args.obs))
 	observations = expert_data['obs']; actions = expert_data['actions']
@@ -70,10 +73,16 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 	# Q network imitation
 	q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
 	loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=act_t_ph, logits=q_net))
+	tf.summary.scalar("Loss", loss)
+
 	pred = tf.equal(tf.argmax(q_net,1), tf.argmax(ac_t_ph,1))
 	acc = tf.reduce_mean(tf.cast(pred, tf.float32))
+	tf.summar.scalar("Accuracy", acc)
 
 	opt = tf.train.AdamOptimizer(args.lr).minimize(loss)
+	merge = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
+        test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
 
 	###############
 	# Run Env    #
@@ -108,16 +117,13 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 			saver.restore(session, args.weights)
 		
 		train_dict = {obs_t_ph: obs_batch, act_t_ph: act_batch}
-		train_loss = session.run(loss, feed_dict=train_dict)
-		train_acc = session.run(acc, feed_dict=train_dict)
-		print "Train Loss: %s" %(str(train_loss))
-		print "Train Acc: %s" %(str(train_acc))
-		session.run(opt, feed_dict=train_dict)
+		summary, _ = session.run([merged, opt], feed_dict=train_dict)
+		train_writer.add_summary(summary, t)
 
 		if t % eval_iters == 0:
 			test_batch_idx = np.random.choice(val_obs.shape[0], test_batch_size, replace=False)
-			test_acc = session.run(acc, feed_dict={obs_t_ph: val_obs[test_batch_idx], act_t_ph: val_act[test_batch_idx]})
-			print "Validation Accuracy: %s" %(str(test_acc))
+			summary, test_acc = session.run([merged, acc], feed_dict={obs_t_ph: val_obs[test_batch_idx], act_t_ph: val_act[test_batch_idx]})
+			test_writer.add_summary(summary, t)
 
 	saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
 	print "Done Training..."
