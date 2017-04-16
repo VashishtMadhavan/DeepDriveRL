@@ -1,5 +1,6 @@
 import os,argparse,sys, random
 import gym
+import pickle
 import itertools
 from collections import namedtuple
 import universe
@@ -40,8 +41,11 @@ def setup(env, args):
 		os.mkdir(args.snapshot_dir)
 
 	args.summary_dir = os.path.join(args.output_dir, "summary")
-	if not os.path.exist(args.summary_dir):
+	if not os.path.exists(args.summary_dir):
 		os.mkdir(args.summary_dir)
+
+	if args.phase == "test":
+		args.demonstrations_file = os.path.join(args.output_dir, "demonstrations.pkl")
 
 	env = Logger(env)
 	env = Monitor(env, monitor_dir, force=True)
@@ -57,7 +61,7 @@ def setup(env, args):
 	args.exploration_schedule = PiecewiseSchedule(
 	[
 		(0, 1.0),
-		(1e6, 0.1),
+		(100, 0.1),
 		(args.max_iters / 2, 0.01),
 		], outside_value=0.01
 	)
@@ -121,8 +125,11 @@ def train(env, session, args,
 	opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
 	train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
 
-	merged = tf.summary.merge_all()
-	train_writer = tf.summary.FileWriter(args.summary_dir)
+	# if tensorflow v0.12 comment line below and uncomment line after
+	merged = tf.merge_all_summaries()
+	train_writer = tf.train.SummaryWriter(args.summary_dir)
+	#merge = tf.summary.merge_all()
+	#train_writer = tf.summary.FileWriter(args.summary_dir)
 
 	update_target_fn = []
 	for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name), 
@@ -152,13 +159,25 @@ def train(env, session, args,
 	lfp.write("Timestep\tMean Reward\tBest Mean Reward\tEpisodes\tExploration\tLearning Rate\n")
 	lfp.close()
 
+	if args.weights:
+		model_initialized = True
+		saver.restore(session, args.weights)
+
+	if args.phase == "test":
+		dem_obs = []; dem_actions = []
+
 	for t in itertools.count():
+		print "Iteration: " + str(t)
 		if args.render:
 			env.render()
 
 		if t >= args.max_iters:
-			save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
-			print "Model saved at %s: " %(save_path)
+			if args.phase == "train":
+				save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
+				print "Model saved at %s: " %(save_path)
+			elif args.phase == "test":
+				ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
+				pickle.dump(ret_dict, open(args.demonstrations_file, 'w'))
 			break
 
 		if last_obs[0] is None:
@@ -172,7 +191,7 @@ def train(env, session, args,
 		# 	1. Random with probability exploration_schedule.value(t)
 		#	2. Chosen from the target DQN
 
-		if random.random() < args.exploration_schedule.value(t) or not model_initialized:
+		if (random.random() < args.exploration_schedule.value(t) or not model_initialized) and args.phase == "train":
 			action_idx = random.randint(0,num_actions-1)
 		else:
 			encoded_obs = replay_buffer.encode_recent_observation()
@@ -184,6 +203,11 @@ def train(env, session, args,
 		episode_rewards.append(reward[0])
 		replay_buffer.store_effect(obs_idx, action_idx, reward[0], done)
 
+		#observation collection for imitation learning
+		if args.phase == "test":
+			dem_obs.append(encoded_obs)
+			dem_actions.append(action_idx)
+
 		if done[0]:
 			last_obs = env.reset()
 			episode_rewards = []
@@ -192,18 +216,14 @@ def train(env, session, args,
 		# Performing Experience Replay by sampling from the ReplayBuffer
 		# and training the network with some random exploration criterion
 
-		if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
+		if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size) and args.phase == "train":
 			obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
 			
 			if not model_initialized:
 				model_initialized = True
-				if not args.weights:
-					# if tensorflow v0.12 then replace global_variables with all variables
-					initialize_interdependent_variables(session, tf.all_variables(), 
+				# if tensorflow v0.12 then replace global_variables with all variables
+				initialize_interdependent_variables(session, tf.all_variables(), 
 						{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
-				else:
-					saver.restore(session, args.weights)
-					print "Model restored..."
 
 
 			train_dict = {obs_t_ph: obs_batch,
@@ -213,7 +233,7 @@ def train(env, session, args,
 						done_mask_ph: done_mask,
 						lr: args.optimizer.lr_schedule.value(t)
 						}
-			summary, _ =.session.run([merged, train_fn], feed_dict=train_dict)
+			summary, _ = session.run([merged, train_fn], feed_dict=train_dict)
 			train_writer.add_summary(summary, t)
 
 			# Logging
@@ -263,7 +283,7 @@ def main(args):
 
 	if args.task == "DuskDrive":
 		env = gym.make('flashgames.DuskDrive-v0')
-		env.configure(remotes=1) # TODO: potentially change this for different remotes
+		env.configure(remotes=1)
 	elif args.task == "Torcs":
 		raise NotImplementedError()
 
@@ -278,9 +298,9 @@ def parse_args():
 	parser.add_argument('--output_dir', type=str, default="output_test/", help="where to store all misc. training output")
 	parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
 	parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-	parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
+	parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='test')
         parser.add_argument('--weights', type=str, default="output/weights/model_2000000.0.ckpt", help="path to model weights")
-	parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
+	parser.add_argument('--max_iters', type=int, default=10000, help='number of timesteps to run DQN')
 	parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
 	parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
 	return parser.parse_args()

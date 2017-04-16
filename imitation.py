@@ -28,7 +28,7 @@ def setup(env, args):
 	if not os.path.exists(args.snapshot_dir):
 		os.mkdir(args.snapshot_dir)
 
-        args.summary_dir = os.path.join(args.output_dir, "summaries")
+        args.summary_dir = os.path.join(args.output_dir, "summary")
 	if not os.path.exists(args.summary_dir):
 		os.mkdir(args.summary_dir)
 
@@ -80,9 +80,16 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 	tf.summar.scalar("Accuracy", acc)
 
 	opt = tf.train.AdamOptimizer(args.lr).minimize(loss)
-	merge = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
-        test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
+
+	# if tensorflow v0.12 uncomment below lines and comment out lines further down
+	#merge = tf.summary.merge_all()
+        #train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
+        #test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
+
+	merge = tf.merge_all_summaries()
+	train_writer = tf.train.SummaryWriter(args.summary_dir + '/train')
+	test_writer = tf.train.SummaryWriter(args.summary_dir + '/test')
+
 
 	###############
 	# Run Env    #
@@ -94,7 +101,11 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 	saver = tf.train.Saver()
 	last_obs = env.reset()
 
-	for t in range(args.max_iters):
+	if args.weights:
+		model_initialized = True
+		saver.restore(session, args.weights)
+
+	for t in range(args.iters):
 		batch_idx = np.random.choice(train_obs.shape[0], batch_size, replace=False)
 		obs_batch = obs_batch[batch_idx]
 		act_batch = []
@@ -113,9 +124,6 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 				{obs_t_ph: obs_batch, act_t_ph: act_batch})
 
 		# Training step
-		if args.weights:
-			saver.restore(session, args.weights)
-		
 		train_dict = {obs_t_ph: obs_batch, act_t_ph: act_batch}
 		summary, _ = session.run([merged, opt], feed_dict=train_dict)
 		train_writer.add_summary(summary, t)
@@ -125,7 +133,7 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 			summary, test_acc = session.run([merged, acc], feed_dict={obs_t_ph: val_obs[test_batch_idx], act_t_ph: val_act[test_batch_idx]})
 			test_writer.add_summary(summary, t)
 
-	saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
+	saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" % (args.iters)))
 	print "Done Training..."
 
 def get_session(gpu_id):
@@ -168,7 +176,7 @@ def parse_args():
 	parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
 	parser.add_argument('--lr', type=float, default=0.001, help='base learning rate')
 	parser.add_argument('--weights', type=str, default=None, help="path to model weights")
-	parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
+	parser.add_argument('--iters', type=int, default=20000, help='number of timesteps to run DQN')
 	return parser.parse_args()
 
 if __name__=="__main__":
