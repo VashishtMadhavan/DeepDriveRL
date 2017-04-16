@@ -39,6 +39,9 @@ def setup(env, args):
 	if not os.path.exists(args.snapshot_dir):
 		os.mkdir(args.snapshot_dir)
 
+	args.summary_dir = os.path.join(args.output_dir, "summary")
+	if not os.path.exist(args.summary_dir):
+		os.mkdir(args.summary_dir)
 
 	env = Logger(env)
 	env = Monitor(env, monitor_dir, force=True)
@@ -60,7 +63,6 @@ def setup(env, args):
 	)
 	return env
 
-#TODO: attach tensorBoard
 #TODO: add support for different Q networks
 def train(env, session, args,
 	replay_buffer_size=100000,
@@ -100,21 +102,27 @@ def train(env, session, args,
 	target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
 
 	q_val = tf.reduce_sum(q_net * actions_mat, reduction_indices=1)
+	tf.summary.tensor_summary("Q Value", q_val)
 	target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
 	error = tf.reduce_mean(tf.square(target_q_val - q_val))
+	tf.summary.scalar("Train Error", error)
 
 	# if tensorflow v0.12 uncomment two lines below and comment out the bottom two lines
 	
 	#q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
 	#target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
 	q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='q_func')
-        target_q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='tq_func')
+	target_q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='tq_func')
 	
 
 	# Optimization parameters
 	lr = tf.placeholder(tf.float32, (), name="learn_rate")
+	tf.summary.scalar("Learning Rate", lr)
 	opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
 	train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
+
+	merged = tf.summary.merge_all()
+	train_writer = tf.summary.FileWriter(args.summary_dir)
 
 	update_target_fn = []
 	for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name), 
@@ -205,7 +213,8 @@ def train(env, session, args,
 						done_mask_ph: done_mask,
 						lr: args.optimizer.lr_schedule.value(t)
 						}
-			session.run(train_fn, feed_dict=train_dict)
+			summary, _ =.session.run([merged, train_fn], feed_dict=train_dict)
+			train_writer.add_summary(summary, t)
 
 			# Logging
 			if len(episode_rewards) > 0:
@@ -223,13 +232,13 @@ def train(env, session, args,
 						args.exploration_schedule.value(t),
 						args.optimizer.lr_schedule.value(t)))
 					lfp.close()
-				print("Timestep %d" % (t,))
-            			print("mean reward (100 episodes) %f" % mean_episode_reward)
-            			print("best mean reward %f" % best_mean_episode_reward)
-            			print("episodes %d" % len(episode_rewards))
-            			print("exploration %f" % args.exploration_schedule.value(t))
-            			print("learning_rate %f" % args.optimizer.lr_schedule.value(t))
-            			print
+					print("Timestep %d" % (t,))
+					print("mean reward (100 episodes) %f" % mean_episode_reward)
+					print("best mean reward %f" % best_mean_episode_reward)
+					print("episodes %d" % len(episode_rewards))
+					print("exploration %f" % args.exploration_schedule.value(t))
+					print("learning_rate %f" % args.optimizer.lr_schedule.value(t))
+					print
 	    			sys.stdout.flush()
 
 	
