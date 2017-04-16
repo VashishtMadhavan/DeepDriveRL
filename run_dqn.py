@@ -169,7 +169,7 @@ def train(env, session, args,
 		else:
 			encoded_obs = replay_buffer.encode_recent_observation()
 			encoded_obs = encoded_obs[np.newaxis, ...]
-			q_net_eval = sess.run(q_net, feed_dict={obs_t_ph: encoded_obs})
+			q_net_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
 			action_idx = np.argmax(q_net_eval)
 
 		last_obs, reward, done, info = env.step([actions[action_idx]])
@@ -203,7 +203,7 @@ def train(env, session, args,
 						rew_t_ph: rew_batch,
 						obs_tp1_ph: next_obs_batch,
 						done_mask_ph: done_mask,
-						learning_rate: args.optimizer.lr_schedule.value(t)
+						lr: args.optimizer.lr_schedule.value(t)
 						}
 			session.run(train_fn, feed_dict=train_dict)
 
@@ -227,8 +227,8 @@ def train(env, session, args,
             			print("mean reward (100 episodes) %f" % mean_episode_reward)
             			print("best mean reward %f" % best_mean_episode_reward)
             			print("episodes %d" % len(episode_rewards))
-            			print("exploration %f" % exploration.value(t))
-            			print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            			print("exploration %f" % args.exploration.value(t))
+            			print("learning_rate %f" % args.optimizer.lr_schedule.value(t))
             			print
 	    			sys.stdout.flush()
 
