@@ -227,7 +227,7 @@ def train(env, session, args,
             			print("mean reward (100 episodes) %f" % mean_episode_reward)
             			print("best mean reward %f" % best_mean_episode_reward)
             			print("episodes %d" % len(episode_rewards))
-            			print("exploration %f" % args.exploration.value(t))
+            			print("exploration %f" % args.exploration_schedule.value(t))
             			print("learning_rate %f" % args.optimizer.lr_schedule.value(t))
             			print
 	    			sys.stdout.flush()
