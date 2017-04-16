@@ -105,6 +105,9 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 		model_initialized = True
 		saver.restore(session, args.weights)
 
+	if args.phase == "test":
+		avgAcc = 0.
+
 	for t in range(args.iters):
 		batch_idx = np.random.choice(train_obs.shape[0], batch_size, replace=False)
 		obs_batch = obs_batch[batch_idx]
@@ -125,16 +128,25 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 
 		# Training step
 		train_dict = {obs_t_ph: obs_batch, act_t_ph: act_batch}
-		summary, _ = session.run([merged, opt], feed_dict=train_dict)
-		train_writer.add_summary(summary, t)
+		if args.phase == "train":
+			summary, _ = session.run([merged, opt], feed_dict=train_dict)
+			train_writer.add_summary(summary, t)
 
-		if t % eval_iters == 0:
+		elif args.phase == "test":
+			train_acc = session.run(acc, feed_dict=train_dict)
+			avgAcc += train_acc
+
+		if t % eval_iters == 0 and args.phase == "train":
 			test_batch_idx = np.random.choice(val_obs.shape[0], test_batch_size, replace=False)
 			summary, test_acc = session.run([merged, acc], feed_dict={obs_t_ph: val_obs[test_batch_idx], act_t_ph: val_act[test_batch_idx]})
 			test_writer.add_summary(summary, t)
 
-	saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" % (args.iters)))
-	print "Done Training..."
+	if args.phase == "train":
+		saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" % (args.iters)))
+		print "Done Training..."
+	elif args.phase == "test":
+		print "Test Accuracy: " + str(avgAcc / float(args.iters))
+
 
 def get_session(gpu_id):
 	os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
@@ -170,6 +182,7 @@ def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', type=int, default=0, help='gpu id')
 	parser.add_argument('--obs', type=str, help="Data file with observations and actions")
+	parser.add_argument('--phase', type=str, choices=['train', 'test'], default='train', help='training or test phase')
 	parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
 	parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
 	parser.add_argument('--train', action='store_true', help="If true, executes training phase of network")
