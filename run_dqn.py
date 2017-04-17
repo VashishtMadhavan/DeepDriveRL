@@ -222,7 +222,7 @@ def train(env, session, args,
         if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size) and args.phase == "train":
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
-            if not model_initialized:
+	    if not model_initialized:
                 model_initialized = True
                 initialize_interdependent_variables(session, tf.global_variables(), 
                         {obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
@@ -265,12 +265,12 @@ def train(env, session, args,
 
     
 def get_session(gpu_id):
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     tf.reset_default_graph()
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,
         intra_op_parallelism_threads=1)
-    tf_config.gpu_options.visible_device_list=gpu_id
+    #tf_config.gpu_options.visible_device_list=gpu_id
     session = tf.Session(config=tf_config)
     return session
 
@@ -297,7 +297,7 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=0, help='gpu id')
+    parser.add_argument('--gpu', type=int, default=6, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
     parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
