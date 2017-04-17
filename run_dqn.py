@@ -89,9 +89,8 @@ def train(env, session, args,
         actions = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
         num_actions = len(actions)
     elif args.task == "Torcs":
-        #print(env.action_space)
+        actions = [-1, 1]
         num_actions = 2
-        #raise NotImplementedError("Please implement Torcs Functionality...")
 
     # Placeholder Formatting
     obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
@@ -183,11 +182,16 @@ def train(env, session, args,
                 pickle.dump(ret_dict, open(args.demonstrations_file, 'w'))
             break
 
-        if last_obs[0] is None:
+        if args.task == "DuskDrive":
+            last_obs_image = last_obs[0]
+        else:
+            last_obs_image = last_obs.img
+
+        if last_obs_image is None:
             last_obs, reward, done, info = env.step([actions[0]])
             continue
 
-        down_samp = imresize(last_obs[0], (128, 128, 3))
+        down_samp = imresize(last_obs_image, (128, 128, 3))
         obs_idx = replay_buffer.store_frame(down_samp)
 
         # Loading ReplayBuffer with actions that are:
@@ -203,15 +207,19 @@ def train(env, session, args,
             action_idx = np.argmax(q_net_eval)
 
         last_obs, reward, done, info = env.step([actions[action_idx]])
-        episode_rewards.append(reward[0])
-        replay_buffer.store_effect(obs_idx, action_idx, reward[0], done)
+        
+        last_reward = reward[0] if args.task == "DuskDrive" else reward
+        
+        episode_rewards.append(last_reward)
+        replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
 
         #observation collection for imitation learning
         if args.phase == "test":
             dem_obs.append(encoded_obs)
             dem_actions.append(action_idx)
 
-        if done[0]:
+        last_done = done[0] if args.task == "DuskDrive" else done
+        if last_done:
             last_obs = env.reset()
             episode_rewards = []
 
@@ -289,9 +297,8 @@ def main(args):
         env.configure(remotes=1)
     elif args.task == "Torcs":
         from gym_torcs import TorcsEnv
-        env = TorcsEnv(vision=True, throttle=True)
-        #ob = env.reset(relaunch=True)
-        #raise NotImplementedError()
+        env = TorcsEnv(vision=True, throttle=False)
+        
 
     sess = get_session(str(args.gpu))
     env = setup(env, args)

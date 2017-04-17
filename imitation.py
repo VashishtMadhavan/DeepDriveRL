@@ -60,12 +60,12 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 
 	# Setting up Training and Validation sets
 	train_idx = np.random.choice(n, int(0.9*n),replace=False)
-    test_idx = np.delete(np.arange(n),train_idx)
+	test_idx = np.delete(np.arange(n),train_idx)
+	
+	train_obs = observations[train_idx]; train_act = actions[train_idx]
+	val_obs = observations[test_idx]; val_act = actions[test_idx]
 
-    train_obs = observations[train_idx]; train_act = actions[train_idx]
-    val_obs = observations[test_idx]; val_act = actions[test_idx]
-
-    # Placeholder Formatting
+    	# Placeholder Formatting
 	obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
 	act_t_ph = tf.placeholder(tf.int32, [None])
 	obs_t_float = tf.cast(obs_t_ph, tf.float32) / 255.0
@@ -81,14 +81,9 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 
 	opt = tf.train.AdamOptimizer(args.lr).minimize(loss)
 
-	# if tensorflow v0.12 uncomment below lines and comment out lines further down
-	#merge = tf.summary.merge_all()
-        #train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
-        #test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
-
-	merge = tf.merge_all_summaries()
-	train_writer = tf.train.SummaryWriter(args.summary_dir + '/train')
-	test_writer = tf.train.SummaryWriter(args.summary_dir + '/test')
+	merge = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
+        test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
 
 
 	###############
@@ -123,7 +118,7 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 
 		if not model_initialized:
 			initialize_interdependent_variables(session, 
-				tf.all_variables(), 
+				tf.global_variables(), 
 				{obs_t_ph: obs_batch, act_t_ph: act_batch})
 
 		# Training step
