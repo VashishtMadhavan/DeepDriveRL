@@ -106,30 +106,22 @@ def train(env, session, args,
 	target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
 
 	q_val = tf.reduce_sum(q_net * actions_mat, reduction_indices=1)
-	tf.summary.tensor_summary("Q Value", q_val)
+	tf.summary.tensor_summary("q_value", q_val)
 	target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
 	error = tf.reduce_mean(tf.square(target_q_val - q_val))
-	tf.summary.scalar("Train Error", error)
+	tf.summary.scalar("train_error", error)
 
-	# if tensorflow v0.12 uncomment two lines below and comment out the bottom two lines
+	q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+	target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
 	
-	#q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-	#target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
-	q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='q_func')
-	target_q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='tq_func')
-	
-
 	# Optimization parameters
 	lr = tf.placeholder(tf.float32, (), name="learn_rate")
 	tf.summary.scalar("Learning Rate", lr)
 	opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
 	train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
 
-	# if tensorflow v0.12 comment line below and uncomment line after
-	merged = tf.merge_all_summaries()
-	train_writer = tf.train.SummaryWriter(args.summary_dir)
-	#merge = tf.summary.merge_all()
-	#train_writer = tf.summary.FileWriter(args.summary_dir)
+	merged = tf.summary.merge_all()
+	train_writer = tf.summary.FileWriter(args.summary_dir)
 
 	update_target_fn = []
 	for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name), 
@@ -167,7 +159,6 @@ def train(env, session, args,
 		dem_obs = []; dem_actions = []
 
 	for t in itertools.count():
-		print "Iteration: " + str(t)
 		if args.render:
 			env.render()
 
@@ -221,8 +212,7 @@ def train(env, session, args,
 			
 			if not model_initialized:
 				model_initialized = True
-				# if tensorflow v0.12 then replace global_variables with all variables
-				initialize_interdependent_variables(session, tf.all_variables(), 
+				initialize_interdependent_variables(session, tf.global_variables(), 
 						{obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
 
 
