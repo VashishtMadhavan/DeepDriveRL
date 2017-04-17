@@ -89,8 +89,8 @@ def train(env, session, args,
         actions = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
         num_actions = len(actions)
     elif args.task == "Torcs":
-        actions = [-1, 1]
-        num_actions = 2
+        actions = [-1, 0, 1]
+        num_actions = 3
 
     # Placeholder Formatting
     obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
