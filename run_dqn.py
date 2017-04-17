@@ -222,7 +222,7 @@ def train(env, session, args,
         if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size) and args.phase == "train":
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
-	    if not model_initialized:
+            if not model_initialized:
                 model_initialized = True
                 initialize_interdependent_variables(session, tf.global_variables(), 
                         {obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
