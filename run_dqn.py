@@ -86,8 +86,8 @@ def train(env, session, args,
 
     #TODO: implement Torcs action extraction
     if args.task == "DuskDrive":
-        actions = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
-        num_actions = len(actions)
+        actions = env.action_space.actions
+	num_actions = len(actions)
     elif args.task == "Torcs":
         actions = [-1, 1]
         num_actions = 2
@@ -109,28 +109,21 @@ def train(env, session, args,
 
     q_val = tf.reduce_sum(q_net * actions_mat, reduction_indices=1)
     tf.summary.tensor_summary("QValue", q_val)
+
     target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
     error = tf.reduce_mean(tf.square(target_q_val - q_val))
     tf.summary.scalar("Train Error", error)
 
-    # if tensorflow v0.12 uncomment two lines below and comment out the bottom two lines
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
     
-    #q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-    #target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
-    q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='q_func')
-    target_q_func_vars = tf.get_collection(tf.GraphKeys.VARIABLES, scope='tq_func')
-    
-
     # Optimization parameters
     lr = tf.placeholder(tf.float32, (), name="learn_rate")
     tf.summary.scalar("Learning Rate", lr)
     opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
     train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
 
-    # if tensorflow v0.12 comment line below and uncomment line after
-    #merged = tf.merge_all_summaries()
-    #train_writer = tf.train.SummaryWriter(args.summary_dir)
-    merge = tf.summary.merge_all()
+    merged = tf.summary.merge_all()
     train_writer = tf.summary.FileWriter(args.summary_dir)
 
     update_target_fn = []
@@ -152,7 +145,6 @@ def train(env, session, args,
     episode_rewards = []
     log_steps = 10000
     
-
     saver = tf.train.Saver()
     last_obs = env.reset()
     log_file = "%s/%s" % (args.output_dir, args.log_file)
@@ -176,8 +168,8 @@ def train(env, session, args,
         if t >= args.max_iters:
             if args.phase == "train":
                 save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
-                print ("Model saved at %s: " %(save_path))
-            elif args.phase == "test":
+            
+	    elif args.phase == "test":
                 ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
                 pickle.dump(ret_dict, open(args.demonstrations_file, 'w'))
             break
@@ -232,8 +224,7 @@ def train(env, session, args,
             
             if not model_initialized:
                 model_initialized = True
-                # if tensorflow v0.12 then replace global_variables with all variables
-                initialize_interdependent_variables(session, tf.all_variables(), 
+                initialize_interdependent_variables(session, tf.global_variables(), 
                         {obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
 
 
@@ -308,12 +299,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=0, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output_test/", help="where to store all misc. training output")
+    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-    parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='test')
-    parser.add_argument('--weights', type=str, default="output/weights/model_2000000.0.ckpt", help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=10000, help='number of timesteps to run DQN')
+    parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
+    parser.add_argument('--weights', type=str, default=None, help="path to model weights")
+    parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
     parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     return parser.parse_args()
