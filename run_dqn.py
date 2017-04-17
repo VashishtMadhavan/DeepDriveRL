@@ -61,7 +61,7 @@ def setup(env, args):
 	args.exploration_schedule = PiecewiseSchedule(
 	[
 		(0, 1.0),
-		(100, 0.1),
+		(1e6, 0.1),
 		(args.max_iters / 2, 0.01),
 		], outside_value=0.01
 	)
@@ -85,7 +85,7 @@ def train(env, session, args,
 
 	#TODO: implement Torcs action extraction
 	if args.task == "DuskDrive":
-		actions = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
+		actions = env.action_space.actions
 		num_actions = len(actions)
 	elif args.task == "Torcs":
 		raise NotImplementedError("Please implement Torcs Functionality...")
@@ -295,12 +295,12 @@ def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', type=int, default=0, help='gpu id')
 	parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-	parser.add_argument('--output_dir', type=str, default="output_test/", help="where to store all misc. training output")
+	parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
 	parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
 	parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-	parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='test')
-        parser.add_argument('--weights', type=str, default="output/weights/model_2000000.0.ckpt", help="path to model weights")
-	parser.add_argument('--max_iters', type=int, default=10000, help='number of timesteps to run DQN')
+	parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
+        parser.add_argument('--weights', type=str, default=None, help="path to model weights")
+	parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
 	parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
 	parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
 	return parser.parse_args()
