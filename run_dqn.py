@@ -87,7 +87,7 @@ def train(env, session, args,
     #TODO: implement Torcs action extraction
     if args.task == "DuskDrive":
         actions = env.action_space.actions
-	num_actions = len(actions)
+        num_actions = len(actions)
     elif args.task == "Torcs":
         actions = [-1, 0, 1]
         num_actions = 3
@@ -169,7 +169,7 @@ def train(env, session, args,
             if args.phase == "train":
                 save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
             
-	    elif args.phase == "test":
+            elif args.phase == "test":
                 ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
                 pickle.dump(ret_dict, open(args.demonstrations_file, 'w'))
             break
