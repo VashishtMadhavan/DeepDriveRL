@@ -22,3 +22,14 @@ def dqn_base(img_in, num_actions, scope, reuse=False):
             out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
         return out
 
+
+def dqn_fullyconnected(tensor_in, num_actions, scope, reuse=False):
+    with tf.variable_scope(scope, reuse=reuse):
+        out = tensor_in
+        out = layers.flatten(out)
+        out = layers.fully_connected(out, num_outputs=1024, activation_fn=tf.nn.relu)
+        out = layers.fully_connected(out, num_outputs=2048, activation_fn=tf.nn.relu)
+        out = layers.fully_connected(out, num_outputs=1024, activation_fn=tf.nn.relu)
+        out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
+        return out
+

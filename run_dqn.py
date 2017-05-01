@@ -1,5 +1,6 @@
 import os,argparse,sys, random
 import gym
+from gym import wrappers
 import pickle
 import itertools
 from collections import namedtuple
@@ -56,6 +57,8 @@ def setup(env, args):
 
     if args.model == "BaseDQN":
         args.q_func = dqn_base
+    elif args.model == "DQNFullyConnected":        
+        args.q_func = dqn_fullyconnected
     else:
         raise NotImplementedError("Add support for different Q network models")
 
@@ -68,28 +71,58 @@ def setup(env, args):
     )
     return env
 
+def concat_obs(obs):
+    cat = np.array([])
+    for ob in obs:
+        cat = np.concatenate((cat, ob.reshape(-1)), 0)
+    #ob = obs.angle
+    #cat = np.concatenate((cat, ob.reshape(-1)), 0)
+    #ob = obs.trackPos
+    #cat = np.concatenate((cat, ob.reshape(-1)), 0)
+    return cat
+
+def reward_from_obs(obs, reward, done):
+    if done:
+        return -100
+    #return obs.speedX + sum(obs.track**2) - abs(obs.speedY) - abs(obs.speedZ)
+    #print(obs.focus)
+    #print(obs.track)
+    #print(reward)
+    return reward
+
+    
+
+
 #TODO: add support for different Q networks
 def train(env, session, args,
     replay_buffer_size=100000,
     batch_size=32,
     gamma=0.99,
-    learning_starts=50000,
+    learning_starts=10000,
     learning_freq=4,
     frame_history_len=4,
-    target_update_freq=10000,
+    target_update_freq=1000,
     grad_norm_clipping=10):
-
     
     # resizing all network input to (128,128,3) for ease of processing
-    img_h, img_w, img_c = (128, 128, 3)
+    if args.task == "DuskDrive":
+        img_h, img_w, img_c = (128, 128, 3)
+    elif args.task == "Torcs":
+        img_h, img_w, img_c = (64, 64, 3)
+    elif args.task == "Torcs_novision":
+        img_h, img_w, img_c = (1, 1, 70)
     input_shape = (img_h, img_w, frame_history_len * img_c)
     
     if args.task == "DuskDrive":
         actions = env.action_space.actions
-	num_actions = len(actions)
+        num_actions = len(actions)
     elif args.task == "Torcs":
-        actions = [-1, 1]
-        num_actions = 2
+        actions = [-1, 0, 1]
+        num_actions = 3
+    elif args.task == "Torcs_novision":
+        actions = [-1, 0, 1]
+        num_actions = 3
+
 
     # Placeholder Formatting
     obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
@@ -145,11 +178,14 @@ def train(env, session, args,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     episode_rewards = []
-    log_steps = 10000
+    log_steps = 1000
     last_reward = None
-    
+ 
     saver = tf.train.Saver()
-    last_obs = env.reset()
+    if args.task == 'DuskDrive':
+        last_obs = env.reset()
+    else:
+        last_obs = env.reset(relaunch=True)
     log_file = "%s/%s" % (args.output_dir, args.log_file)
 
     lfp = open(log_file, 'w')
@@ -158,6 +194,7 @@ def train(env, session, args,
 
     if args.weights:
         model_initialized = True
+        print('loaded weights ' + args.weights)
         saver.restore(session, args.weights)
 
     if args.phase == "test":
@@ -168,27 +205,37 @@ def train(env, session, args,
         if args.render:
             env.render()
 
-        if t >= args.max_iters:
-            break
 
-        if t % args.snap_iter == 0 and model_initialized:
+        if t % args.save_period == 0 and model_initialized:
             if args.phase == "train":
                 save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
             elif args.phase == "test":
+                save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
+
+        if t >= args.max_iters:
+            if args.phase == "test":
                 ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
                 pickle.dump(ret_dict, open(args.demonstrations_file,'w'))
-
+	    break
 
         if args.task == "DuskDrive":
             last_obs_image = last_obs[0]
         else:
-            last_obs_image = last_obs.img
+            #last_obs_image = last_obs.img
+            last_obs_image = concat_obs(last_obs)
 
         if last_obs_image is None:
             last_obs, reward, done, info = env.step([actions[0]])
+            if args.task == 'Torcs_novision':
+                reward = reward_from_obs(last_obs, reward, done)
             continue
 
-        down_samp = imresize(last_obs_image, (128, 128, 3))
+        if args.task == "DuskDrive":
+            down_samp = imresize(last_obs_image, (128, 128, 3))
+        elif args.task == "Torcs":
+            down_samp = last_obs_image.reshape(64, 64, 3)
+        elif args.task == "Torcs_novision":
+            down_samp = last_obs_image.reshape(1, 1, -1)
         obs_idx = replay_buffer.store_frame(down_samp)
 
         # Loading ReplayBuffer with actions that are:
@@ -197,13 +244,18 @@ def train(env, session, args,
 
         if (random.random() < args.exploration_schedule.value(t) or not model_initialized) and args.phase == "train":
             action_idx = random.randint(0,num_actions-1)
+            #print('random', action_idx)
         else:
             encoded_obs = replay_buffer.encode_recent_observation()
             encoded_obs = encoded_obs[np.newaxis, ...]
             q_net_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
             action_idx = np.argmax(q_net_eval)
+            #print(action_idx, q_net_eval)
 
         last_obs, reward, done, info = env.step([actions[action_idx]])
+        reward = reward_from_obs(last_obs, reward, done)
+        #reward = -reward
+        print('reward: ' + str(reward))
         
         if not args.velocity:
             last_reward = reward[0] if args.task == "DuskDrive" else reward
@@ -225,7 +277,10 @@ def train(env, session, args,
 
         last_done = done[0] if args.task == "DuskDrive" else done
         if last_done:
-            last_obs = env.reset()
+            if args.task == "DuskDrive":
+                last_obs = env.reset()
+            else:
+                last_obs = env.reset(relaunch=True)
             episode_rewards = []
 
 
@@ -235,7 +290,7 @@ def train(env, session, args,
         if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size) and args.phase == "train":
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
-	    if not model_initialized:
+            if not model_initialized:
                 model_initialized = True
                 initialize_interdependent_variables(session, tf.global_variables(), 
                         {obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
@@ -252,8 +307,10 @@ def train(env, session, args,
             train_writer.add_summary(summary, t)
 
             if t % target_update_freq == 0:
-                num_param_updates += 1
+                print('updating target networks...')
                 session.run(update_target_fn)
+                num_param_updates += 1            
+
 
             # Logging
             if len(episode_rewards) > 0:
@@ -297,6 +354,9 @@ def main(args):
     elif args.task == "Torcs":
         from gym_torcs import TorcsEnv
         env = TorcsEnv(vision=True, throttle=False)
+    elif args.task == "Torcs_novision":
+        from gym_torcs import TorcsEnv
+        env = TorcsEnv(vision=False, throttle=False)
         
 
     sess = get_session(str(args.gpu))
@@ -307,16 +367,16 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=3, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output_velocity/", help="where to store all misc. training output")
-    parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
+    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
+    parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
     parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
     parser.add_argument('--weights', type=str, default=None, help="path to model weights")
-    parser.add_argument('--snap_iter', type=int, default=1e6, help="after every snap_iter timesteps, checkpoints are saved")
     parser.add_argument('--max_iters', type=int, default=8e6, help='number of timesteps to run DQN')
     parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--velocity', action='store_true', help='velocity constraint for dusk drive')
+    parser.add_argument('--save_period', type=int, default=10000, help='period of saving checkpoints')
     return parser.parse_args()
 
 
