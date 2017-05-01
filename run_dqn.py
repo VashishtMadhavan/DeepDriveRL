@@ -20,7 +20,7 @@ Setting up learning rate scheduler and exploration criterion
 def setup(env, args):
     args.lr_schedule = PiecewiseSchedule([
     (0,1e-4 * args.lr_mult),
-    (args.max_iters / 10, 1e-4 * args.lr_mult),
+    (args.max_iters / 4, 1e-4 * args.lr_mult),
     (args.max_iters / 2,  5e-5 * args.lr_mult),
     ], outside_value=5e-5 * args.lr_mult)
 
@@ -62,7 +62,7 @@ def setup(env, args):
     args.exploration_schedule = PiecewiseSchedule(
     [
         (0, 1.0),
-        (100, 0.1),
+        (1e6, 0.1),
         (args.max_iters / 2, 0.01),
         ], outside_value=0.01
     )
@@ -83,8 +83,7 @@ def train(env, session, args,
     # resizing all network input to (128,128,3) for ease of processing
     img_h, img_w, img_c = (128, 128, 3)
     input_shape = (img_h, img_w, frame_history_len * img_c)
-
-    #TODO: implement Torcs action extraction
+    
     if args.task == "DuskDrive":
         actions = env.action_space.actions
 	num_actions = len(actions)
@@ -102,14 +101,17 @@ def train(env, session, args,
     obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
+    tf.summary.scalar("Reward Mean", tf.reduce_mean(rew_t_ph))
+    tf.summary.scalar("Reward Max", tf.reduce_max(rew_t_ph))
+    tf.summary.scalar("Reward Min", tf.reduce_min(rew_t_ph))
+    tf.summary.histogram("Reward Hist", rew_t_ph)
+
     # Q learning dynamics
     actions_mat = tf.one_hot(act_t_ph, num_actions, off_value=0.0, on_value=1.0, axis=-1)
     q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
     target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
 
     q_val = tf.reduce_sum(q_net * actions_mat, reduction_indices=1)
-    tf.summary.tensor_summary("QValue", q_val)
-
     target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, reduction_indices=1) * done_mask_ph
     error = tf.reduce_mean(tf.square(target_q_val - q_val))
     tf.summary.scalar("Train Error", error)
@@ -144,6 +146,7 @@ def train(env, session, args,
     best_mean_episode_reward = -float('inf')
     episode_rewards = []
     log_steps = 10000
+    last_reward = None
     
     saver = tf.train.Saver()
     last_obs = env.reset()
@@ -161,18 +164,20 @@ def train(env, session, args,
         dem_obs = []; dem_actions = []
 
     for t in itertools.count():
-        print ("Iteration: " + str(t))
+        #print ("Iteration: " + str(t))
         if args.render:
             env.render()
 
         if t >= args.max_iters:
-            if args.phase == "train":
-                save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(args.max_iters)))
-            
-	    elif args.phase == "test":
-                ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
-                pickle.dump(ret_dict, open(args.demonstrations_file, 'w'))
             break
+
+        if t % args.snap_iter == 0 and model_initialized:
+            if args.phase == "train":
+                save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
+            elif args.phase == "test":
+                ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
+                pickle.dump(ret_dict, open(args.demonstrations_file,'w'))
+
 
         if args.task == "DuskDrive":
             last_obs_image = last_obs[0]
@@ -200,8 +205,16 @@ def train(env, session, args,
 
         last_obs, reward, done, info = env.step([actions[action_idx]])
         
-        last_reward = reward[0] if args.task == "DuskDrive" else reward
-        
+        if not args.velocity:
+            last_reward = reward[0] if args.task == "DuskDrive" else reward
+        else:
+            if not last_reward or reward[0] >= last_reward:
+	        last_reward = reward[0]
+            else:
+                # adding penalty for negative changes in reward
+		last_reward = reward[0] + (reward[0] - last_reward)
+
+
         episode_rewards.append(last_reward)
         replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
 
@@ -238,31 +251,26 @@ def train(env, session, args,
             summary, _ = session.run([merged, train_fn], feed_dict=train_dict)
             train_writer.add_summary(summary, t)
 
+            if t % target_update_freq == 0:
+                num_param_updates += 1
+                session.run(update_target_fn)
+
             # Logging
             if len(episode_rewards) > 0:
                 mean_episode_reward = np.mean(episode_rewards)
             if len(episode_rewards) > 100:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
 
-            if t % log_steps == 0 and model_initialized:
-                if best_mean_episode_reward != -float('inf'):
-                    lfp = open(log_file, 'a')
-                    lfp.write("%s\t%s\t%s\t%s\t%s\t%s\n" %(t, 
-                        mean_episode_reward, 
-                        best_mean_episode_reward, 
-                        len(episode_rewards),
-                        args.exploration_schedule.value(t),
-                        args.optimizer.lr_schedule.value(t)))
-                    lfp.close()
-                    print("Timestep %d" % (t,))
-                    print("mean reward (100 episodes) %f" % mean_episode_reward)
-                    print("best mean reward %f" % best_mean_episode_reward)
-                    print("episodes %d" % len(episode_rewards))
-                    print("exploration %f" % args.exploration_schedule.value(t))
-                    print("learning_rate %f" % args.optimizer.lr_schedule.value(t))
-                    print
-                    sys.stdout.flush()
-
+        if t % log_steps == 0 and model_initialized:
+            if best_mean_episode_reward != -float('inf'):
+                lfp = open(log_file, 'a')
+                lfp.write("%s\t%s\t%s\t%s\t%s\t%s\n" %(t, 
+                    mean_episode_reward, 
+                    best_mean_episode_reward, 
+                    len(episode_rewards),
+                    args.exploration_schedule.value(t),
+                    args.optimizer.lr_schedule.value(t)))
+                lfp.close()
     
 def get_session(gpu_id):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -297,16 +305,18 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=6, help='gpu id')
+    parser.add_argument('--gpu', type=int, default=3, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
+    parser.add_argument('--output_dir', type=str, default="output_velocity/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
     parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
     parser.add_argument('--weights', type=str, default=None, help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=2e6, help='number of timesteps to run DQN')
+    parser.add_argument('--snap_iter', type=int, default=1e6, help="after every snap_iter timesteps, checkpoints are saved")
+    parser.add_argument('--max_iters', type=int, default=8e6, help='number of timesteps to run DQN')
     parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
+    parser.add_argument('--velocity', action='store_true', help='velocity constraint for dusk drive')
     return parser.parse_args()
 
 
