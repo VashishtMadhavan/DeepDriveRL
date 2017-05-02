@@ -45,8 +45,6 @@ def setup(env, args):
     if not os.path.exists(args.summary_dir):
         os.mkdir(args.summary_dir)
 
-    if args.phase == "test":
-        args.demonstrations_file = os.path.join(args.output_dir, "demonstrations.pkl")
 
     if args.task == "DuskDrive":
         env = Logger(env)
@@ -65,7 +63,7 @@ def setup(env, args):
     args.exploration_schedule = PiecewiseSchedule(
     [
         (0, 1.0),
-        (args.max_iters / 10, 0.1),
+        (1e6, 0.1),
         (args.max_iters / 2, 0.01),
         ], outside_value=0.01
     )
@@ -92,8 +90,6 @@ def reward_from_obs(obs, reward, done):
 
     
 
-
-#TODO: add support for different Q networks
 def train(env, session, args,
     replay_buffer_size=100000,
     batch_size=32,
@@ -134,11 +130,6 @@ def train(env, session, args,
     obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
-    tf.summary.scalar("Reward Mean", tf.reduce_mean(rew_t_ph))
-    tf.summary.scalar("Reward Max", tf.reduce_max(rew_t_ph))
-    tf.summary.scalar("Reward Min", tf.reduce_min(rew_t_ph))
-    tf.summary.histogram("Reward Hist", rew_t_ph)
-
     # Q learning dynamics
     actions_mat = tf.one_hot(act_t_ph, num_actions, off_value=0.0, on_value=1.0, axis=-1)
     q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
@@ -154,7 +145,6 @@ def train(env, session, args,
     
     # Optimization parameters
     lr = tf.placeholder(tf.float32, (), name="learn_rate")
-    tf.summary.scalar("Learning Rate", lr)
     opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
     train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
 
@@ -197,23 +187,16 @@ def train(env, session, args,
         print('loaded weights ' + args.weights)
         saver.restore(session, args.weights)
 
-    if args.phase == "test":
-        dem_obs = []; dem_actions = []
+    if args.render:
+        env.render()
 
     for t in itertools.count():
-        #print ("Iteration: " + str(t))
-        if args.render:
-            env.render()
 
         if t % args.save_period == 0 and model_initialized:
-            if args.phase == "train":
-                save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
+            save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
 
         if t >= args.max_iters:
-            if args.phase == "test":
-                ret_dict = {'obs': np.squeeze(np.array(dem_obs)), 'actions': np.array(dem_actions)}
-                pickle.dump(ret_dict, open(args.demonstrations_file,'w'))
-	    break
+            break
 
         if args.task == "DuskDrive":
             last_obs_image = last_obs[0]
@@ -239,7 +222,7 @@ def train(env, session, args,
         #   1. Random with probability exploration_schedule.value(t)
         #   2. Chosen from the target DQN
 
-        if (random.random() < args.exploration_schedule.value(t) or not model_initialized) and args.phase == "train":
+        if (random.random() < args.exploration_schedule.value(t) or not model_initialized):
             action_idx = random.randint(0,num_actions-1)
             #print('random', action_idx)
         else:
@@ -267,11 +250,6 @@ def train(env, session, args,
         episode_rewards.append(last_reward)
         replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
 
-        #observation collection for imitation learning
-        if args.phase == "test":
-            dem_obs.append(encoded_obs)
-            dem_actions.append(action_idx)
-
         last_done = done[0] if args.task == "DuskDrive" else done
         if last_done:
             if args.task == "DuskDrive":
@@ -284,7 +262,7 @@ def train(env, session, args,
         # Performing Experience Replay by sampling from the ReplayBuffer
         # and training the network with some random exploration criterion
 
-        if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size) and args.phase == "train":
+        if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
             if not model_initialized:
@@ -315,16 +293,16 @@ def train(env, session, args,
             if len(episode_rewards) > 100:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
 
-        if t % log_steps == 0 and model_initialized:
-            if best_mean_episode_reward != -float('inf'):
-                lfp = open(log_file, 'a')
-                lfp.write("%s\t%s\t%s\t%s\t%s\t%s\n" %(t, 
-                    mean_episode_reward, 
-                    best_mean_episode_reward, 
-                    len(episode_rewards),
-                    args.exploration_schedule.value(t),
-                    args.optimizer.lr_schedule.value(t)))
-                lfp.close()
+            if t % log_steps == 0 and model_initialized:
+                if best_mean_episode_reward != -float('inf'):
+                    lfp = open(log_file, 'a')
+                    lfp.write("%s\t%s\t%s\t%s\t%s\t%s\n" %(t, 
+                        mean_episode_reward, 
+                        best_mean_episode_reward, 
+                        len(episode_rewards),
+                        args.exploration_schedule.value(t),
+                        args.optimizer.lr_schedule.value(t)))
+                    lfp.close()
     
 def get_session(gpu_id):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -367,7 +345,6 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default="output_full_test2/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-    parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='test')
     parser.add_argument('--weights', type=str, default="output_full/weights/model_7000000.ckpt", help="path to model weights")
     parser.add_argument('--max_iters', type=int, default=20000, help='number of timesteps to run DQN')
     parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
