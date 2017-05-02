@@ -16,7 +16,18 @@ from dqn_utils import *
 Setting up parameters for running Universe + Training Behavioral Cloning Model
 """
 
-#TODO: add support for different Q networks
+def load_data(data_file, frame_history=4):
+	data = pickle.load(open(data_file))
+	obs = data['obs']; act = data['actions'].flatten()
+	obs = obs.reshape(-1, arr.shape[2], arr.shape[3], arr.shape[4])
+
+	observations = []; actions = []
+	for i, o in enumerate(obs):
+		for j in range(frame_history):
+			observations.append(obs[i][:, :, 3*j:3*(j+1)])
+			actions.append(act[i])
+	return observations, actions
+
 def setup(env, args):
 	# setting up dir to store monitor output
 	monitor_dir = os.path.join(args.output_dir, "monitor")
@@ -45,12 +56,11 @@ def setup(env, args):
 	return env
 
 def train(env, session, args, batch_size=32, epsilon=0.03):
-	expert_data = pickle.load(open(args.obs))
-	observations = expert_data['obs']; actions = expert_data['actions']
+	observations, actions = load_data(args.data_file)
 
 	#TODO: implement Torcs action map
 	if args.task == "DuskDrive":
-		action_map = [[x] for x in env.action_space[0]]+ [[y] for y in env.action_space[1]] + [[z] for z in env.action_space[2]]
+		action_map = env.action_space
 	elif args.task == "Torcs":
 		raise NotImplementedError("Please implement Torcs Functionality...")
 
@@ -72,7 +82,8 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 
 	# Q network imitation
 	q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
-	loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=act_t_ph, logits=q_net))
+	y_pred = tf.argmax(q_net, axis=1)
+	loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=act_t_ph, logits=y_pred))
 	tf.summary.scalar("Loss", loss)
 
 	pred = tf.equal(tf.argmax(q_net,1), tf.argmax(ac_t_ph,1))
@@ -82,8 +93,8 @@ def train(env, session, args, batch_size=32, epsilon=0.03):
 	opt = tf.train.AdamOptimizer(args.lr).minimize(loss)
 
 	merge = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
-        test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
+	train_writer = tf.summary.FileWriter(args.summary_dir + "/train")
+	test_writer = tf.summary.FileWriter(args.summary_dir + "/test")
 
 
 	###############
@@ -176,7 +187,7 @@ def main(args):
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', type=int, default=0, help='gpu id')
-	parser.add_argument('--obs', type=str, help="Data file with observations and actions")
+	parser.add_argument('--data_file', type=str, help="Data file with observations and actions")
 	parser.add_argument('--phase', type=str, choices=['train', 'test'], default='train', help='training or test phase')
 	parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
 	parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
