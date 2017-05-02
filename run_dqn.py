@@ -65,7 +65,7 @@ def setup(env, args):
     args.exploration_schedule = PiecewiseSchedule(
     [
         (0, 1.0),
-        (1e6, 0.1),
+        (args.max_iters / 10, 0.1),
         (args.max_iters / 2, 0.01),
         ], outside_value=0.01
     )
@@ -205,16 +205,13 @@ def train(env, session, args,
         if args.render:
             env.render()
 
-
         if t % args.save_period == 0 and model_initialized:
             if args.phase == "train":
-                save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
-            elif args.phase == "test":
                 save_path = saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
 
         if t >= args.max_iters:
             if args.phase == "test":
-                ret_dict = {'obs': np.array(dem_obs), 'actions': np.array(dem_actions)}
+                ret_dict = {'obs': np.squeeze(np.array(dem_obs)), 'actions': np.array(dem_actions)}
                 pickle.dump(ret_dict, open(args.demonstrations_file,'w'))
 	    break
 
@@ -253,9 +250,9 @@ def train(env, session, args,
             #print(action_idx, q_net_eval)
 
         last_obs, reward, done, info = env.step([actions[action_idx]])
-        reward = reward_from_obs(last_obs, reward, done)
+        #reward = reward_from_obs(last_obs, reward, done)
         #reward = -reward
-        print('reward: ' + str(reward))
+        #print('reward: ' + str(reward))
         
         if not args.velocity:
             last_reward = reward[0] if args.task == "DuskDrive" else reward
@@ -365,20 +362,19 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=3, help='gpu id')
+    parser.add_argument('--gpu', type=int, default=4, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
+    parser.add_argument('--output_dir', type=str, default="output_full_test2/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-    parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='train')
-    parser.add_argument('--weights', type=str, default=None, help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=8e6, help='number of timesteps to run DQN')
+    parser.add_argument('--phase', nargs='?', choices=['train', 'test'], default='test')
+    parser.add_argument('--weights', type=str, default="output_full/weights/model_7000000.ckpt", help="path to model weights")
+    parser.add_argument('--max_iters', type=int, default=20000, help='number of timesteps to run DQN')
     parser.add_argument('--log_file', type=str, default="train.log", help="where to log DQN output")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--velocity', action='store_true', help='velocity constraint for dusk drive')
-    parser.add_argument('--save_period', type=int, default=10000, help='period of saving checkpoints')
+    parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
     return parser.parse_args()
-
 
 if __name__=="__main__":
     args = parse_args()
