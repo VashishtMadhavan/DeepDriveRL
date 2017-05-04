@@ -13,6 +13,7 @@ from scipy.misc import imresize
 from network import *
 from dqn_utils import *
 
+
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
 """
@@ -94,7 +95,7 @@ def task_input_shape(task):
         return (1, 1, 70)
     
 
-def task_actions(task):
+def task_actions(task, env):
     if task == "DuskDrive":
         actions = env.action_space.actions
         num_actions = len(actions)
@@ -112,6 +113,7 @@ def train(env, session, args,
     gamma=0.99,
     learning_starts=10000,
     learning_freq=4,
+    frame_skip=8,
     frame_history_len=4,
     target_update_freq=1000,
     grad_norm_clipping=10):
@@ -119,7 +121,7 @@ def train(env, session, args,
     img_h, img_w, img_c = task_input_shape(args.task)
     input_shape = (img_h, img_w, frame_history_len * img_c)
     
-    actions, num_actions = task_actions(args.task)
+    actions, num_actions = task_actions(args.task, env)
 
     # Placeholder Formatting
     obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
@@ -169,8 +171,8 @@ def train(env, session, args,
     episode_rewards = []    
 
     log_steps = 10000
-    with open(args.log_file) as lfp:
-        print("Timestep", "Mean Reward", "Best Reward", file=lfp)
+    with open(args.log_file,'w') as lfp:
+        lfp.write("Timestep, Mean Reward, Best Reward\n")
  
 
     saver = tf.train.Saver()
@@ -179,7 +181,7 @@ def train(env, session, args,
     else:
         last_obs = env.reset(relaunch=True)
 
-    if args.weights
+    if args.weights:
         model_initialized = True
         saver.restore(session, args.weights)
 
@@ -228,13 +230,17 @@ def train(env, session, args,
             q_net_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
             action_idx = np.argmax(q_net_eval)
 
-        last_obs, reward, done, info = env.step([actions[action_idx]])
-        
-        last_reward = reward[0] if args.task == "DuskDrive" else reward
+	# frameskipping
+        skip_reward = 0.
+        for _ in range(frame_skip):
+            last_obs, reward, done, info = env.step([actions[action_idx]])
+            skip_reward += reward[0] if args.task == "DuskDrive" else reward
+        last_reward = float(skip_reward)            
+
         episode_rewards.append(last_reward)
         replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
-
         last_done = done[0] if args.task == "DuskDrive" else done
+
         if last_done:
             if args.task == "DuskDrive":
                 last_obs = env.reset()
@@ -275,8 +281,8 @@ def train(env, session, args,
             if len(episode_rewards) > 100:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
             if t % log_steps == 0 and model_initialized:
-                with open(args.log_file,'w') as lfp:
-                    print(t, mean_episode_reward, best_mean_episode_reward, file=lfp)
+                with open(args.log_file,'a') as lfp:
+                    lfp.write("%s,%s,%s\n" %(str(t), str(mean_episode_reward), str(best_mean_episode_reward)))
 			
     
 def get_session(gpu_id):
@@ -314,13 +320,13 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=4, help='gpu id')
+    parser.add_argument('--gpu', type=int, default=0, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output_full/", help="where to store all misc. training output")
+    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
-    parser.add_argument('--weights', type=str, default="output_full/weights/model_7000000.ckpt", help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=20000, help='number of timesteps to run DQN')
+    parser.add_argument('--weights', type=str, default=None, help="path to model weights")
+    parser.add_argument('--max_iters', type=int, default=10e6, help='number of timesteps to run DQN')
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
     return parser.parse_args()
