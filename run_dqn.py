@@ -232,9 +232,8 @@ def train(env, session, args,
             encoded_obs = replay_buffer.encode_recent_observation()[np.newaxis,...]
             q_net_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
             action_idx = np.argmax(q_net_eval)
-
-	# frameskipping
-	last_reward = 0.
+        
+        last_reward = 0.
         for _ in range(frame_skip):
             last_obs, reward, done, info = env.step([actions[action_idx]])
             last_reward += reward[0] if args.task == "DuskDrive" else reward         
@@ -270,7 +269,7 @@ def train(env, session, args,
                         done_mask_ph: done_mask,
                         lr: args.optimizer.lr_schedule.value(t)
                         }
-                        
+
             session.run(train_fn, feed_dict=train_dict)
             num_param_updates += 1
 
