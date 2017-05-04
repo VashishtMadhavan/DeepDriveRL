@@ -111,11 +111,11 @@ def train(env, session, args,
     replay_buffer_size=100000,
     batch_size=32,
     gamma=0.99,
-    learning_starts=10000,
+    learning_starts=40000,
     learning_freq=4,
     frame_skip=8,
     frame_history_len=4,
-    target_update_freq=1000,
+    target_update_freq=10000,
     grad_norm_clipping=10):
     
     img_h, img_w, img_c = task_input_shape(args.task)
@@ -190,6 +190,7 @@ def train(env, session, args,
 
 
     for t in itertools.count():
+        print("Iteration: %s" % str(t))
         if args.render:
             env.render()
 
@@ -254,6 +255,7 @@ def train(env, session, args,
         # and training the network with some random exploration criterion
 
         if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
+            print("Updating Network.....")
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
             if not model_initialized:
@@ -280,9 +282,9 @@ def train(env, session, args,
             # Logging
             if len(total_episode_rewards) > 0:
                 mean_episode_reward = np.mean(np.array(total_episode_rewards)[-100:])
-            if len(total_episode_rewards) > 100:
+            if len(total_episode_rewards) > 10:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
-            if t % log_steps == 0 and model_initialized:
+            if t % log_steps == 0 and model_initialized and best_mean_episode_reward != float('-inf'):
                 with open(args.log_file,'a') as lfp:
                     lfp.write("%s,%s,%s\n" %(str(t), str(mean_episode_reward), str(best_mean_episode_reward)))
 			
@@ -322,7 +324,7 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=int, default=0, help='gpu id')
+    parser.add_argument('--gpu', type=int, default=2, help='gpu id')
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
     parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")

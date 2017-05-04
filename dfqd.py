@@ -21,20 +21,7 @@ Script for training DfQD networks from Learning from Demonstration for Real
 World RL paper 
 
 """
-#TODO: adapt exploration schedule to linear as in paper
 def setup(env, args):
-    args.lr_schedule = PiecewiseSchedule([
-    (0, 1e-4 * args.lr_mult),
-    (args.max_iters / 10, 1e-4 * args.lr_mult),
-    (args.max_iters / 2,  5e-5 * args.lr_mult),
-    ], outside_value=5e-5 * args.lr_mult)
-
-    args.optimizer = OptimizerSpec(
-    constructor=tf.train.AdamOptimizer,
-    kwargs=dict(epsilon=1e-4),
-    lr_schedule=args.lr_schedule
-    )
-
     # setting up dir to store monitor output
     monitor_dir = os.path.join(args.output_dir, "monitor")
     if not os.path.exists(monitor_dir):
@@ -61,13 +48,7 @@ def setup(env, args):
     else:
         raise NotImplementedError("Add support for different Q network models")
 
-    args.exploration_schedule = PiecewiseSchedule(
-    [
-        (0, 1.0),
-        (1e6, 0.1),
-        (args.max_iters / 2, 0.01),
-        ], outside_value=0.01
-    )
+    args.exploration_schedule = LinearSchedule(1000, 0.01, initial_p=1.0)
     return env
 
 def task_input_shape(task):
@@ -80,7 +61,12 @@ def task_input_shape(task):
     
 
 def load_demonstrations(dem_file):
-    return
+    data = h5py.File(open(dem_file))
+    obs = data['obs']
+    actions = data['actions']
+    rewards = data['rewards']
+    done = data['done']
+    return obs, actions, rewards, done
 
 def task_actions(task, env):
     if task == "DuskDrive":
@@ -132,7 +118,7 @@ def train(env, session, args,
     input_shape = (img_h, img_w, frame_history_len * img_c)
     
     actions, num_actions = task_actions(args.task, env)
-    dem_obs, dem_act = load_demonstrations(args.demonstrations)
+    dem_obs, dem_act, dem_rew = load_demonstrations(args.demonstrations)
 
     demo_buffer = ReplayBuffer(dem_obs.shape[0], frame_history_len)
     replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
@@ -171,6 +157,10 @@ def train(env, session, args,
     update_target_fn = tf.group(*update_target_fn)
 
     # Step 1: Loading demonstration buffer
+    for idx in range(dem_obs.shape[0]):
+        scale_down = imresize(dem_obs[idx], (img_w, img_h, img_c))
+        demo_obs_idx = demo_buffer.store_fame(scale_down)
+        demo_buffer.store_effect(obs_idx, dem_act[idx], dem_rew[idx], dem_done[idx])
 
     # Step 2: Pretraining
     for p_step in range(args.pretrain_steps):
@@ -192,12 +182,12 @@ def train(env, session, args,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     total_episode_rewards = []
-
+    t = 0
     for _ in range(args.q_learn_steps):
-        done = False
+        last_done = False
         episode_reward = 0.
         last_obs = env.reset()
-        for t in itertools.count():
+        while not last_done:
             if last_obs[0] is None:
                 last_obs, reward, done, info = env.step([actions[0]])
                 continue
@@ -235,13 +225,12 @@ def train(env, session, args,
             session.run(train_fn, feed_dict=train_dict)
 
             last_done = done[0] if args.task == "DuskDrive" else done
-            if last_done:
-                last_obs = env.reset()
-                total_episode_rewards.append(episode_reward)
-                episode_reward = 0
-                session.run(update_target_fn)
-                break
-
+            t += 1
+        
+        last_obs = env.reset()
+        total_episode_rewards.append(episode_reward)
+        episode_reward = 0
+        session.run(update_target_fn)
 
 def get_session(gpu_id):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -283,11 +272,12 @@ def parse_args():
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
     parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
-    parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
     parser.add_argument('--weights', type=str, default=None, help="path to model weights")
     parser.add_argument('--max_iters', type=int, default=10e6, help='number of timesteps to run DQN')
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
+    
+    
     return parser.parse_args()
 
 if __name__=="__main__":
