@@ -102,7 +102,6 @@ def loss(q_net, q_net_tp1, target_q_net, act_t_ph, done_mask_ph, num_actions):
 
     return loss_dqn + lambda1 * loss_margin + lambda2 * loss_l2
 
-#TODO: add saver functionality
 def train(env, session, args,
     replay_buffer_size=100000,
     batch_size=32,
@@ -156,6 +155,12 @@ def train(env, session, args,
         update_target_fn.append(var_target.assign(var))
     update_target_fn = tf.group(*update_target_fn)
 
+    model_initailized = False
+    saver = tf.train.Saver()
+    if args.weights:
+        saver.restore(session, args.weights)
+        model_initailized = True
+
     # Step 1: Loading demonstration buffer
     for idx in range(dem_obs.shape[0]):
         scale_down = imresize(dem_obs[idx], (img_w, img_h, img_c))
@@ -165,9 +170,10 @@ def train(env, session, args,
     # Step 2: Pretraining
     for p_step in range(args.pretrain_steps):
         obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = demo_buffer.sample(batch_size)
-        if p_step == 0:
+        if not model_initailized:
             initialize_interdependent_variables(session, tf.global_variables(), 
                         {obs_t_ph: obs_batch, obs_tp1_ph: next_obs_batch})
+            model_initailized = True
 
         train_dict ={
             obs_t_ph: obs_batch,
@@ -191,6 +197,9 @@ def train(env, session, args,
             if last_obs[0] is None:
                 last_obs, reward, done, info = env.step([actions[0]])
                 continue
+
+            if t % args.save_period == 0:
+                saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
 
             down_samp = imresize(last_obs[0], (img_w, img_h, img_c))
             obs_idx = replay_buffer.store_frame(down_samp)
@@ -276,7 +285,6 @@ def parse_args():
     parser.add_argument('--max_iters', type=int, default=10e6, help='number of timesteps to run DQN')
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
-    
     
     return parser.parse_args()
 
