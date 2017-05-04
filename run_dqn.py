@@ -133,23 +133,26 @@ def train(env, session, args,
     obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
-    # Q learning dynamics
-    actions_mat = tf.one_hot(act_t_ph, num_actions)
+    # Double Q learning dynamics
     q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
-    target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
+    q_net_tp1 = args.q_func(obs_tp1_float, num_actions, scope='q_func', reuse=True)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func') 
 
-    q_val = tf.reduce_sum(q_net * actions_mat, axis=1)
-    target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net, axis=1) * done_mask_ph
+    target_q_net= args.q_func(obs_tp1_float, num_actions, scope='tq_func', reuse=False)
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
+
+    actions_mat = tf.one_hot(tf.argmax(q_net, axis=1), num_actions)
+    q_val = tf.reduce_max(q_net * actions_mat, axis=1)
+    
+    q_actions_mat = tf.one_hot(tf.argmax(q_net_tp1, axis=1), num_actions)
+    target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net * q_actions_mat, axis=1) * done_mask_ph
+
     error = tf.reduce_mean(tf.square(target_q_val - q_val))
 
-    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
-    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tq_func')
-    
     # Optimization parameters
     lr = tf.placeholder(tf.float32, (), name="learn_rate")
     opt = args.optimizer.constructor(learning_rate=lr, **args.optimizer.kwargs)
     train_fn = minimize_and_clip(opt, error, var_list=q_func_vars, clip_val=grad_norm_clipping)
-
 
     update_target_fn = []
     for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name), 
@@ -168,7 +171,7 @@ def train(env, session, args,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     total_episode_rewards = []
-    episode_rewards = []    
+    episode_reward = 0.   
 
     log_steps = 10000
     with open(args.log_file,'w') as lfp:
@@ -231,13 +234,12 @@ def train(env, session, args,
             action_idx = np.argmax(q_net_eval)
 
 	# frameskipping
-        skip_reward = 0.
+	last_reward = 0.
         for _ in range(frame_skip):
             last_obs, reward, done, info = env.step([actions[action_idx]])
-            skip_reward += reward[0] if args.task == "DuskDrive" else reward
-        last_reward = float(skip_reward)            
+            last_reward += reward[0] if args.task == "DuskDrive" else reward         
 
-        episode_rewards.append(last_reward)
+        episode_reward += last_reward
         replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
         last_done = done[0] if args.task == "DuskDrive" else done
 
@@ -246,8 +248,8 @@ def train(env, session, args,
                 last_obs = env.reset()
             else:
                 last_obs = env.reset(relaunch=True)
-            total_episode_rewards.append(episode_rewards)
-            episode_rewards = []
+            total_episode_rewards.append(episode_reward)
+            episode_reward = 0.
 
         # Performing Experience Replay by sampling from the ReplayBuffer
         # and training the network with some random exploration criterion
@@ -275,10 +277,9 @@ def train(env, session, args,
 
 
             # Logging
-            if len(episode_rewards) > 0:
-                t_rew = np.array(total_episode_rewards)
-                mean_episode_reward = np.mean(t_rew[-100:])
-            if len(episode_rewards) > 100:
+            if len(total_episode_rewards) > 0:
+                mean_episode_reward = np.mean(np.array(total_episode_rewards)[-100:])
+            if len(total_episode_rewards) > 100:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
             if t % log_steps == 0 and model_initialized:
                 with open(args.log_file,'a') as lfp:
