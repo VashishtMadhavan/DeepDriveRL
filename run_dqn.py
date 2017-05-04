@@ -41,6 +41,8 @@ def setup(env, args):
     if not os.path.exists(args.snapshot_dir):
         os.mkdir(args.snapshot_dir)
 
+    args.log_file = args.output_dir + "train.log"
+
     if args.task == "DuskDrive":
         env = Logger(env)
         env = Monitor(env, monitor_dir, force=True)
@@ -167,8 +169,7 @@ def train(env, session, args,
     episode_rewards = []    
 
     log_steps = 10000
-    log_file = "%s/%s" % (args.output_dir, args.log_file)
-    with open(log_file) as lfp:
+    with open(args.log_file) as lfp:
         print("Timestep", "Mean Reward", "Best Reward", file=lfp)
  
 
@@ -239,17 +240,14 @@ def train(env, session, args,
                 last_obs = env.reset()
             else:
                 last_obs = env.reset(relaunch=True)
-	    total_episode_rewards.append(episode_rewards)
+            total_episode_rewards.append(episode_rewards)
             episode_rewards = []
 
         # Performing Experience Replay by sampling from the ReplayBuffer
         # and training the network with some random exploration criterion
 
-        if t > learning_starts and 
-	   t % learning_freq == 0 and 
-	   replay_buffer.can_sample(batch_size):
-            
-	    obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
+        if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
+            obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
             if not model_initialized:
                 model_initialized = True
@@ -277,8 +275,8 @@ def train(env, session, args,
             if len(episode_rewards) > 100:
                 best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
             if t % log_steps == 0 and model_initialized:
-                with open(log_file,'w') as lfp:
-		     print(t, mean_episode_reward, best_mean_episode_reward, file=lfp)
+                with open(args.log_file,'w') as lfp:
+                    print(t, mean_episode_reward, best_mean_episode_reward, file=lfp)
 			
     
 def get_session(gpu_id):
@@ -287,7 +285,6 @@ def get_session(gpu_id):
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,
         intra_op_parallelism_threads=1)
-    #tf_config.gpu_options.visible_device_list=gpu_id
     session = tf.Session(config=tf_config)
     return session
 
@@ -324,9 +321,7 @@ def parse_args():
     parser.add_argument('--lr_mult', type=float, default=1.0, help='learning rate multiplier')
     parser.add_argument('--weights', type=str, default="output_full/weights/model_7000000.ckpt", help="path to model weights")
     parser.add_argument('--max_iters', type=int, default=20000, help='number of timesteps to run DQN')
-    parser.add_argument('--log_file', type=str, default="output_full/train.log", help="where to log DQN output")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
-    parser.add_argument('--velocity', action='store_true', help='velocity constraint for dusk drive')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
     return parser.parse_args()
 
