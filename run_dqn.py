@@ -270,6 +270,8 @@ def train(env, session, args,
                         done_mask_ph: done_mask,
                         lr: args.optimizer.lr_schedule.value(t)
                         }
+                        
+            session.run(train_fn, feed_dict=train_dict)
             num_param_updates += 1
 
             if num_param_updates % target_update_freq == 0:
