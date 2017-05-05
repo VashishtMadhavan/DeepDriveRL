@@ -172,8 +172,8 @@ def train(env, session, args,
     best_mean_episode_reward = -float('inf')
     total_episode_rewards = []
     episode_reward = 0.   
-
     log_steps = 10000
+    
     with open(args.log_file,'w') as lfp:
         lfp.write("Timestep, Mean Reward, Best Reward\n")
  
@@ -255,7 +255,6 @@ def train(env, session, args,
         # and training the network with some random exploration criterion
 
         if t > learning_starts and t % learning_freq == 0 and replay_buffer.can_sample(batch_size):
-            print("Updating Network.....")
             obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
             
             if not model_initialized:

@@ -48,7 +48,13 @@ def setup(env, args):
     else:
         raise NotImplementedError("Add support for different Q network models")
 
-    args.exploration_schedule = LinearSchedule(1000, 0.01, initial_p=1.0)
+    args.exploration_schedule = PiecewiseSchedule(
+    [
+        (0, 1.0),
+        (1e6, 0.1),
+        (args.dqn_iters / 2, 0.01),
+        ], outside_value=0.01
+    )
     return env
 
 def task_input_shape(task):
@@ -81,7 +87,8 @@ def task_actions(task, env):
     return actions, num_actions
 
 
-def loss(q_net, q_net_tp1, target_q_net, act_t_ph, done_mask_ph, num_actions):
+def loss(q_net, q_net_tp1, target_q_net, 
+    act_t_ph, done_mask_ph, num_actions, rew_t_ph, gamma):
     lambda1 = 1.0
     lambda2 = 10e-5
 
@@ -97,7 +104,7 @@ def loss(q_net, q_net_tp1, target_q_net, act_t_ph, done_mask_ph, num_actions):
     loss_l2 = tf.reduce_sum([tf.reduce_mean(reg_loss) for reg_loss in tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES, scope="q_func")])
 
     # Supervised Large Margin Loss
-    loss_l = (1. = tf.one_hot(act_t_ph, num_actions)) * 0.8
+    loss_l = (1. - tf.one_hot(act_t_ph, num_actions)) * 0.8
     loss_margin = tf.reduce_max(q_net + loss_l, axis=1) - q_val
 
     return loss_dqn + lambda1 * loss_margin + lambda2 * loss_l2
@@ -106,7 +113,7 @@ def train(env, session, args,
     replay_buffer_size=100000,
     batch_size=64,
     gamma=0.99,
-    learning_starts=10000,
+    learning_starts=40000,
     learning_freq=4,
     frame_skip=8,
     frame_history_len=4,
@@ -117,7 +124,7 @@ def train(env, session, args,
     input_shape = (img_h, img_w, frame_history_len * img_c)
     
     actions, num_actions = task_actions(args.task, env)
-    dem_obs, dem_act, dem_rew = load_demonstrations(args.demonstrations)
+    dem_obs, dem_act, dem_rew, dem_done = load_demonstrations(args.demonstrations)
 
     demo_buffer = ReplayBuffer(dem_obs.shape[0], frame_history_len)
     replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
@@ -130,7 +137,6 @@ def train(env, session, args,
 
     obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
-    lr = tf.placeholder(tf.float32, (), name="learn_rate")
 
     q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False, regularize=True)
     q_net_tp1 = args.q_func(obs_tp1_float, num_actions, scope='q_func', reuse=True, regularize=True)
@@ -146,7 +152,7 @@ def train(env, session, args,
     target_q_val = rew_t_ph + gamma * tf.reduce_max(target_q_net * q_actions_mat, axis=1) * done_mask_ph
 
     total_loss = loss(q_net, q_net_tp1, target_q_net, act_t_ph, done_mask_ph, num_actions)
-    optim = tf.train.AdamOptimizer(learning_rate).minimize(pretrain_loss)
+    optim = tf.train.AdamOptimizer(args.lr).minimize(total_loss)
     train_fn = minimize_and_clip(optim, total_loss, var_list=q_func_vars, clip_val=grad_norm_clipping)
 
     update_target_fn = []
@@ -157,6 +163,7 @@ def train(env, session, args,
 
     model_initailized = False
     saver = tf.train.Saver()
+
     if args.weights:
         saver.restore(session, args.weights)
         model_initailized = True
@@ -165,10 +172,10 @@ def train(env, session, args,
     for idx in range(dem_obs.shape[0]):
         scale_down = imresize(dem_obs[idx], (img_w, img_h, img_c))
         demo_obs_idx = demo_buffer.store_fame(scale_down)
-        demo_buffer.store_effect(obs_idx, dem_act[idx], dem_rew[idx], dem_done[idx])
+        demo_buffer.store_effect(demo_obs_idx, dem_act[idx], dem_rew[idx], dem_done[idx])
 
     # Step 2: Pretraining
-    for p_step in range(args.pretrain_steps):
+    for _ in range(args.pretrain_iters):
         obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = demo_buffer.sample(batch_size)
         if not model_initailized:
             initialize_interdependent_variables(session, tf.global_variables(), 
@@ -188,58 +195,86 @@ def train(env, session, args,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     total_episode_rewards = []
-    t = 0
-    for _ in range(args.q_learn_steps):
-        last_done = False
-        episode_reward = 0.
-        last_obs = env.reset()
-        while not last_done:
-            if last_obs[0] is None:
-                last_obs, reward, done, info = env.step([actions[0]])
-                continue
+    episode_reward = 0.
+    num_param_udpates = 0
+    log_steps = 10000
+    last_obs = env.reset()
 
-            if t % args.save_period == 0:
-                saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
+    with open(args.log_file,'w') as lfp:
+        lfp.write("Timestep, Mean Reward, Best Reward\n")
 
-            down_samp = imresize(last_obs[0], (img_w, img_h, img_c))
-            obs_idx = replay_buffer.store_frame(down_samp)
-            eps = args.exploration_schedule.value(t)
+    for t in itertools.count():
+        print("Iteration: %s" % str(t))
+        if args.render:
+            env.render()
 
-            if np.random.rand(1) < eps:
-                action_idx = np.random.choice(num_actions)
+        if t >= args.dqn_iters:
+            break
+
+        if t % args.save_period == 0:
+            saver.save(session, os.path.join(args.snapshot_dir, "model_%s.ckpt" %(str(t))))
+      
+       if last_obs[0] is None:
+            last_obs, reward, done, info = env.step([actions[0]])
+            if args.task == 'Torcs_novision':
+                reward = reward_from_obs(last_obs, reward, done)
+            continue
+
+        down_samp = imresize(last_obs[0], (img_w, img_h, img_c))
+        obs_idx = replay_buffer.store_frame(down_samp)
+        eps = args.exploration_schedule.value(t)
+
+        if np.random.rand(1) < eps:
+            action_idx = np.random.choice(num_actions)
+        else:
+            encoded_obs = replay_buffer.encode_recent_observation()[np.newaxis,...]
+            q_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
+            action_idx = np.argmax(q_eval)
+
+        last_reward = 0.
+        for _ in range(frame_skip):
+            last_obs, reward, done, info = env.step([actions[action_idx]])
+            last_reward += reward[0] if args.task == "DuskDrive" else reward         
+
+        episode_reward += last_reward
+        replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
+        last_done = done[0] if args.task == "DuskDrive" else done
+
+        if last_done:
+            if args.task == "DuskDrive":
+                last_obs = env.reset()
             else:
-                encoded_obs = replay_buffer.encode_recent_observation()[np.newaxis,...]
-                q_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
-                action_idx = np.argmax(q_eval)
-            
-            last_reward = 0.
-            for _ in range(frame_skip):
-                last_obs, reward, done, info = env.step([actions[action_idx]])
-                last_reward += reward[0] if args.task == "DuskDrive" else reward         
+                last_obs = env.reset(relaunch=True)
+            total_episode_rewards.append(episode_reward)
+            episode_reward = 0.
 
-            episode_reward += last_reward
-            replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
-
+        if t > learning_starts and replay_buffer.can_sample(batch_size) and t % learning_freq == 0:
             demo_num = int(batch_size * args.demo_prob)
             demo_obs_batch, demo_act_batch, demo_rew_batch, demo_next_obs_batch, demo_done_mask = demo_buffer.sample(demo_num)
             replay_obs_batch, replay_act_batch, replay_rew_batch, replay_next_obs_batch, replay_done_mask = replay_buffer.sample(batch_size - demo_num)
 
             train_dict = {obs_t_ph: np.vstack((demo_obs_batch,replay_obs_batch)),
-                        act_t_ph: np.concatenate((demo_act_batch, replay_act_batch)),
-                        rew_t_ph: np.concatenate((demo_rew_batch, replay_rew_batch)),
-                        obs_tp1_ph: np.vstack((demo_next_obs_batch, replay_next_obs_batch)),
-                        done_mask_ph: np.concatenate((demo_done_mask, replay_done_mask)),
-                        lr: args.optimizer.lr_schedule.value(t)
-                        }
+                act_t_ph: np.concatenate((demo_act_batch, replay_act_batch)),
+                rew_t_ph: np.concatenate((demo_rew_batch, replay_rew_batch)),
+                obs_tp1_ph: np.vstack((demo_next_obs_batch, replay_next_obs_batch)),
+                done_mask_ph: np.concatenate((demo_done_mask, replay_done_mask)),
+            }
             session.run(train_fn, feed_dict=train_dict)
+            num_param_udpates += 1
 
-            last_done = done[0] if args.task == "DuskDrive" else done
-            t += 1
-        
-        last_obs = env.reset()
-        total_episode_rewards.append(episode_reward)
-        episode_reward = 0
-        session.run(update_target_fn)
+            if num_param_udpates % target_update_freq == 0:
+                session.run(update_target_fn)
+
+            # Logging
+            if len(total_episode_rewards) > 0:
+                mean_episode_reward = np.mean(np.array(total_episode_rewards)[-100:])
+            if len(total_episode_rewards) > 10:
+                best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
+            if t % log_steps == 0 and model_initialized and best_mean_episode_reward != float('-inf'):
+                with open(args.log_file,'a') as lfp:
+                    lfp.write("%s,%s,%s\n" %(str(t), str(mean_episode_reward), str(best_mean_episode_reward)))
+
+            
 
 def get_session(gpu_id):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -278,15 +313,15 @@ def parse_args():
     # Note: all values are set to the default of the paper (Learning from Demonstrations...)
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=3, help='gpu id')
-    parser.add_argument('--demonstrations', type=str, default="demonstrations.h5", help='demonstrations file')
-    parser.add_argument('--pretrain_steps', type=int, default=1000, help="number of update steps for pretraining")
-    parser.add_argument('--q_learn_steps', type=int, default=5000, help="number of episodes for learning; usually max for env")
-    parser.add_argument('--demo_prob', type=float, default=0.1, help="percentage of q learning examples to sample from demonstration buffer")
-    parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
+    parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
+    parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
+    parser.add_argument('--demonstrations', type=str, default="demonstrations.h5", help='demonstrations file')
+    parser.add_argument('--lr', type=float, default=0.001, help="learning rate for optimization")
+    parser.add_argument('--pretrain_iters', type=int, default=1000, help="number of update steps for pretraining")
+    parser.add_argument('--dqn_iters', type=int, default=5000, help="number of episodes for learning; usually max for env")
+    parser.add_argument('--demo_prob', type=float, default=0.1, help="percentage of q learning examples to sample from demonstration buffer")
     parser.add_argument('--weights', type=str, default=None, help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=10e6, help='number of timesteps to run DQN')
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
     return parser.parse_args()
