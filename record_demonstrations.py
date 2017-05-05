@@ -52,6 +52,7 @@ def record(args, env):
 	observations = []
 	actions = []
 	rewards = []
+	done_vals = []
 
 	while len(observations) < args.max_obs:
 		env.render()
@@ -66,21 +67,23 @@ def record(args, env):
 		observations.append(observation_n)
 		actions.append(action_set.index(action))
 		rewards.append(reward_n[0])
+		done_vals.append(done_n[0])
 
 		if done_n[0]:
-			print "PEACE"
 			episodes += 1
 			if args.episodes > 0 and episodes >= args.episodes:
 				break
 			observation_n = env.reset()
 
+
 	with h5py.File(args.output_file, 'w', libver='latest') as f:
 		n = len(observations)
 		input_shape = np.array(observations)[0].shape
 		task = f.create_dataset('task', data=np.string_(args.task))
-		o = f.create_dataset('obs', (n, ) + input_shape, dtype='uint8', compression='lzf', data=np.array(observations))
+		o = f.create_dataset('obs', (n, ) + input_shape, dtype='uint8', compression='lzf', data=np.squeeze(np.array(observations)))
 		a = f.create_dataset('actions', (n, ), dtype='uint8', data=np.array(actions))
 		r = f.create_dataset('rewards', (n, ), dtype='uint8', data=np.array(rewards))
+		d = f.create_dataset('done', (n, ), dtype='uint8', data=np.array(done_vals))
 
 
 def setup(args):
