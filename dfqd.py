@@ -104,7 +104,7 @@ def loss(q_net, q_net_tp1, target_q_net, act_t_ph, done_mask_ph, num_actions):
 
 def train(env, session, args,
     replay_buffer_size=100000,
-    batch_size=32,
+    batch_size=64,
     gamma=0.99,
     learning_starts=10000,
     learning_freq=4,
@@ -275,9 +275,13 @@ def main(args):
     train(env, sess, args)
 
 def parse_args():
+    # Note: all values are set to the default of the paper (Learning from Demonstrations...)
     parser = argparse.ArgumentParser()
+    parser.add_argument('--gpu', type=int, default=3, help='gpu id')
     parser.add_argument('--demonstrations', type=str, default="demonstrations.h5", help='demonstrations file')
-    parser.add_argument('--gpu', type=int, default=0, help='gpu id')
+    parser.add_argument('--pretrain_steps', type=int, default=1000, help="number of update steps for pretraining")
+    parser.add_argument('--q_learn_steps', type=int, default=5000, help="number of episodes for learning; usually max for env")
+    parser.add_argument('--demo_prob', type=float, default=0.1, help="percentage of q learning examples to sample from demonstration buffer")
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
     parser.add_argument('--output_dir', type=str, default="output/", help="where to store all misc. training output")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
@@ -285,7 +289,6 @@ def parse_args():
     parser.add_argument('--max_iters', type=int, default=10e6, help='number of timesteps to run DQN')
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     parser.add_argument('--save_period', type=int, default=1e6, help='period of saving checkpoints')
-    
     return parser.parse_args()
 
 if __name__=="__main__":
