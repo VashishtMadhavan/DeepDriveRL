@@ -18,52 +18,45 @@ Runs a specified DQN and uses it to collect expert demonstrations for imitation 
 
 """
 def setup(env, args):
-	if not os.path.exists(args.demonstration_dir):
-		os.mkdir(args.demonstration_dir)
+   if args.task == "DuskDrive":
+       env = Logger(env)
+       env = Monitor(env, monitor_dir, force=True)
+       env = Vision(env)
+       env = CropObservations(env)
+       env = SafeActionSpace(env)
 
-    args.demonstrations_file = args.demonstration_dir + "demonstrations.pkl"
+   if args.model == "BaseDQN":
+       args.q_func = dqn_base
+   elif args.model == "DQNFullyConnected":
+       args.q_func = dqn_fullyconnected
+   else:
+   	   raise NotImplementedError("Add support for different Q network models")
+   return env
 
-	if args.task == "DuskDrive":
-		env = Logger(env)
-		env = Monitor(env, monitor_dir, force=True)
-		env = Vision(env)
-		env = CropObservations(env)
-		env = SafeActionSpace(env)
+def task_input_shape(task):
+    if task == "DuskDrive":
+        return (128, 128, 3)
+    elif task == "Torcs":
+        return (64, 64, 3)
+    elif task == "Torcs_novision":
+        return (1, 1, 70)
 
-	if args.model == "BaseDQN":
-        args.q_func = dqn_base
-    elif args.model == "DQNFullyConnected":        
-        args.q_func = dqn_fullyconnected
-    else:
-        raise NotImplementedError("Add support for different Q network models")
-    return env
-
-
-def collect(env, session, args,
-	replay_buffer_size=100000,
-	batch_size=32,
-	frame_history_len=4):
-
-	# SETTING UP INPUT
-	if args.task == "DuskDrive":
-		img_h, img_w, img_c = (128, 128, 3)
-	elif args.task == "Torcs":
-        img_h, img_w, img_c = (64, 64, 3)
-    elif args.task == "Torcs_novision":
-        img_h, img_w, img_c = (1, 1, 70)
-	input_shape = (img_h, img_w, frame_history_len * img_c)
-
-
-	# SETTING UP ACTIONS
-	if args.task == "DuskDrive":
+def task_actions(task, env):
+    if task == "DuskDrive":
         actions = env.action_space.actions
         num_actions = len(actions)
-    elif args.task == "Torcs":
+    elif task == "Torcs":
         actions = [-1, 0, 1]
         num_actions = 3
-    elif args.task == "Torcs_novision":
+    elif task == "Torcs_novision":
         actions = [-1, 0, 1]
         num_actions = 3
+    return actions, num_actions
+
+def collect(env, session, args, replay_buffer_size=100000, frame_history_len=4):
+    img_h, img_w, img_c = task_input_shape(args.task)
+    input_shape = (img_h, img_w, img_c)
+    actions, num_actions = task_actions(args.task, env)
 
     obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
     act_t_ph = tf.placeholder(tf.int32, [None])
@@ -75,26 +68,20 @@ def collect(env, session, args,
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
     q_net = args.q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
-
-    replay_buffer = ReplayBuffer(replay_buffer_size, frame_history_len)
     saver = tf.train.Saver()
+    saver.restore(session, args.weights)
+
     if args.task == 'DuskDrive':
         last_obs = env.reset()
     else:
         last_obs = env.reset(relaunch=True)
 
-    if args.weights:
-    	saver.restore(session, args.weights)
-    else:
-    	raise NotImplementedError("Please load weights..")
+    expert_observations = []; expert_actions = []; expert_rewards = []
+    expert_done = []
 
-    if args.render:
-    	env.render()
-
-    expert_dem = []; expert_act = []
-    episode_dem = []; episode_actions = []
-
-    for t in range(args.max_iters):
+    while len(expert_observations) < args.max_demonstrations:
+    	if args.render:
+    		env.render()
 
     	if args.task == "DuskDrive":
             last_obs_image = last_obs[0]
@@ -116,34 +103,33 @@ def collect(env, session, args,
             down_samp = last_obs_image.reshape(1, 1, -1)
 
         # getting action from donwsampled image
-        obs_idx = replay_buffer.store_frame(down_samp)
-        encoded_obs = replay_buffer.encode_recent_observation()
-        encoded_obs = encoded_obs[np.newaxis, ...]
+        encoded_obs = down_samp[np.newaxis, ...]
         q_net_eval = session.run(q_net, feed_dict={obs_t_ph: encoded_obs})
         action_idx = np.argmax(q_net_eval)
 
-        episode_dem.append(encoded_obs); episode_actions.append(action_idx)
-
         last_obs, reward, done, info = env.step([actions[action_idx]])
         last_reward = reward[0] if args.task == "DuskDrive" else reward
-        replay_buffer.store_effect(obs_idx, action_idx, last_reward, done)
-
         last_done = done[0] if args.task == "DuskDrive" else done
+
+        expert_observations.append(down_samp)
+        expert_actions.append(action_idx)
+        expert_rewards.append(last_reward)
+        expert_done.append(last_done)
 
         if last_done:
             if args.task == "DuskDrive":
                 last_obs = env.reset()
             else:
                 last_obs = env.reset(relaunch=True)
-            expert_dem.append(episode_dem)
-            expert_act.append(episode_actions)
-            episode_dem = []; episode_actions = []
 
-    print("Done recording observations....")
-    ret_dict = {}
-    ret_dict['obs'] = np.squeeze(np.array(expert_dem))
-    ret_dict['actions'] = np.array(dem_actions)
-    pickle.dump(ret_dict, open(args.demonstrations_file,'w'))
+    with h5py.File(args.demonstrations_file, 'w', libver='latest') as f:
+        n = len(expert_observations)
+        input_shape = np.array(expert_observations)[0].shape
+        task = f.create_dataset('task', data=np.string_(args.task))
+        o = f.create_dataset('obs', (n, ) + input_shape, dtype='uint8', compression='lzf', data=np.squeeze(np.array(expert_observations)))
+        a = f.create_dataset('actions', (n, ), dtype='uint8', data=np.array(expert_actions))
+        r = f.create_dataset('rewards', (n, ), dtype='uint8', data=np.array(expert_rewards))
+        d = f.create_dataset('done', (n, ), dtype='uint8', data=np.array(expert_done))
 
 
 def main(args):
@@ -170,11 +156,11 @@ def main(args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=4, help='gpu id')
+    parser.add_argument('--demonstrations_file', default="dqn_demonstrations.h5", help="DQN demonstrations")
     parser.add_argument('--model', type=str, default="BaseDQN", help="type of network model for the Q network")
-    parser.add_argument('--demonstration_dir', type=str, default="demonstrations_full/", help="where to store the collected demonstrations")
     parser.add_argument('--task', type=str, choices=['DuskDrive', 'Torcs', 'Torcs_novision'], default="DuskDrive")
     parser.add_argument('--weights', type=str, default="output_full/weights/model_7000000.ckpt", help="path to model weights")
-    parser.add_argument('--max_iters', type=int, default=20000, help='number of demonstrations to collect')
+    parser.add_argument('--max_demonstrations', type=int, default=10000, help="max number of demonstrations to collect")
     parser.add_argument('--render', action='store_true', help='If true, will call env.render()')
     return parser.parse_args()
 
